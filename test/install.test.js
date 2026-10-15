@@ -264,10 +264,13 @@ test("updater keeps a dev checkout silent while installs auto-check", async () =
   assert.equal(fetches, 0, "a background check must not reach GitHub on a dev checkout");
   assert.equal(skipped.currentVersion, "1.1.0");
 
-  // A manual check still lists the GitHub versions; it just never installs.
+  // A manual check still lists the GitHub versions; it never offers or
+  // performs an install.
   const manual = await dev.checkForUpdates();
   assert.equal(fetches, 1);
-  assert.equal(manual.updateAvailable, true);
+  assert.equal(manual.latestTag, "v1.2.0");
+  assert.equal(manual.updateAvailable, false);
+  assert.match((await dev.installRelease({ tag: "v1.2.0" })).error, /source checkout/);
   assert.equal(manual.currentVersion, "1.1.0");
   assert.equal(fs.readFileSync(path.join(appRoot, "electron", "main.cjs"), "utf8"), "// main");
 

@@ -95,7 +95,8 @@ pushes from the dev repo to the public repo on its own.
   fits the window; nothing scrolls at the default size. The boxes use custom
   pickers, plus a bottom dock with Start Recorder Bar. Takes is the saved
   files grouped under the day folder each one sits in (recent takes, open
-  folder). Settings holds Developer mode updates. The studio page fits the
+  folder). Settings holds Developer mode updates and Your data when
+  switching (which channel this copy is, and the backups folder). The studio page fits the
   window; the source list and the takes grid scroll inside their own boxes.
   The boxes set up the take; once the bar is open they lock and follow the
   bar's changes. The take engine (getDisplayMedia, MediaRecorder, chunk
@@ -139,7 +140,7 @@ pushes from the dev repo to the public repo on its own.
   with `protocol` undefined, `ELECTRON_RUN_AS_NODE` is set in the shell;
   clear it.
 - `npm run gate`: the security gate over the working tree and its history.
-- `npm run promote -- --version <x.y.z>`: promote HEAD to the public repo.
+- `npm run promote`: promote HEAD to the public repo as its dev release version.
 - `npm run app:install`: install the app for the current user (see above).
 - `npm run app:verify`: verify an installed app and boot it hidden.
 - `npm run app:uninstall`: remove the installed app.
@@ -179,6 +180,31 @@ switch, stored in SQLite (`updateDeveloperMode`):
   switch is on, kept in memory only, sent only over HTTPS to `api.github.com`,
   and never forwarded on a redirect to another host. With no sign-in the panel
   shows an error that says to turn the switch off for public releases.
+
+Switching channels moves the install, not just the source. SQLite records
+which channel the running app tree came from (`updateInstalledChannel`; a
+database from before this was tracked takes its current channel). When the
+switch points at the other channel, that channel's newest release is offered
+whatever its version ("Switch to public release v1.2.1"), so a developer
+build can go back to an older public release and pick up the newer developer
+build again later. A source checkout lists releases but is never offered or
+given an install.
+
+Data safety across channels:
+
+- Schema changes are additive only (new tables, new columns with defaults,
+  new kv keys; nothing dropped, renamed, or rewritten). Builds from either
+  channel share one database and leave data they do not know about in place.
+  `schemaVersion` in kv is the highest schema any build wrote and is never
+  lowered (`db.schemaInfo().newerData` is true on an older build).
+- Before every install the database is copied with `VACUUM INTO` to
+  `data/backups/recorder-<time>-<fromChannel>-<fromTag>-to-<toChannel>-<toTag>.db`,
+  checked with `PRAGMA quick_check`, never overwriting a file. If the copy
+  fails, nothing installs. Settings > Your data when switching opens the
+  folder. Backups are never deleted by the app.
+- Takes, recordings, and logs live outside the app tree and are never touched
+  by an install. Every install ends in a relaunch, even when a channel switch
+  keeps the same version number.
 
 The update flow has three deliberate properties: finding a release is
 automatic (no check button), there is no switch to stop it, and applying one
@@ -230,8 +256,9 @@ a release when any of these fail:
 7. The built update bundle: only allowed app paths, scanned with the same
    patterns as the source.
 
-`npm run promote -- --version <x.y.z>` (dev checkout, clean, HEAD on
-`origin/main`):
+`npm run promote` (dev checkout, clean, HEAD on `origin/main`) uses the
+version of the dev release built from HEAD, so the same code carries the same
+number in both repos; `--version <x.y.z>` overrides it. It
 exports the tracked files of HEAD (minus `security/`), runs the gate on that
 export, copies it into a fresh clone of the public repo as one commit
 `Simple Recorder v<x.y.z>` authored by the noreply address, runs the gate

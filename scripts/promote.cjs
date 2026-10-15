@@ -2,6 +2,7 @@
 
 // Promote a dev commit to the public repo. The only way code reaches users.
 //
+//   node scripts/promote.cjs                             use the dev release version of HEAD
 //   node scripts/promote.cjs --version 1.2.1             gate, commit, tag, push
 //   node scripts/promote.cjs --version 1.2.1 --dry-run   stop before pushing
 //   node scripts/promote.cjs --version 1.2.0 --replace-history
@@ -107,9 +108,21 @@ function emptyWorkTree(dir) {
   }
 }
 
+// The version of the dev release built from this commit: the highest v* tag
+// on the dev repo that points at it. Promoting with it keeps dev and public
+// on the same number for the same code.
+function devVersionFor(head) {
+  let best = "";
+  for (const line of git(ROOT, ["ls-remote", "--tags", "origin"]).split(/\r?\n/)) {
+    const [sha, ref] = line.split("\t");
+    if (sha !== head || !ref) continue;
+    const version = normalizeVersion(ref.replace(/^refs\/tags\//, "").replace(/\^\{\}$/, ""));
+    if (version && (!best || compareVersions(version, best) > 0)) best = version;
+  }
+  return best;
+}
+
 function promote(args) {
-  if (!args.version) fail("Pass --version <x.y.z>.");
-  const tag = formatTag(args.version);
   const denylist = path.join(ROOT, "security", "private-denylist.txt");
 
   if (git(ROOT, ["status", "--porcelain"]).trim()) fail("The dev checkout has uncommitted changes. Commit them first.");
@@ -120,6 +133,14 @@ function promote(args) {
   } catch {
     fail("HEAD " + head.slice(0, 10) + " is not on the dev repo's main yet. Push it to origin/main first.");
   }
+  if (!args.version) {
+    args.version = devVersionFor(head);
+    if (!args.version) {
+      fail("No dev release is built from HEAD " + head.slice(0, 10) + " yet. Wait for the dev build, or pass --version <x.y.z>.");
+    }
+    say("Using the dev release version of HEAD: " + args.version);
+  }
+  const tag = formatTag(args.version);
 
   const latest = publicLatestVersion(args.publicRepo);
   if (latest && compareVersions(args.version, latest) <= 0) {

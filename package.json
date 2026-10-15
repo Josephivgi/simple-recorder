@@ -1,6 +1,6 @@
 {
   "name": "simple-recorder",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "description": "Standalone screen recorder for Windows with a floating recorder bar",
   "main": "electron/main.cjs",

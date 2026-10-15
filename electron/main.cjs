@@ -1828,6 +1828,7 @@ async function runSmoke(win) {
             " takeCards: document.querySelectorAll('.take-card').length," +
             " updateDownload: Boolean(document.querySelector('[data-update-download]'))," +
             " updateSummary: Boolean(document.querySelector('[data-update-summary]'))," +
+            " backupsButton: Boolean(document.querySelector('[data-open-backups]'))," +
             " devModeSwitch: (document.querySelector('[data-dev-updates-switch]') || {}).getAttribute ? document.querySelector('[data-dev-updates-switch]').getAttribute('aria-checked') : null," +
             " dock: (document.querySelector('[data-dock-summary]') || {}).textContent || '' }))",
         )
@@ -1847,6 +1848,7 @@ async function runSmoke(win) {
                 ownerMachine: update.ownerMachine,
                 autoCheck: update.autoCheck,
                 channel: update.channel,
+                installedChannel: update.installedChannel,
                 updateAvailable: update.updateAvailable,
                 currentTag: update.currentTag,
                 installDir: update.installDir,
@@ -2227,6 +2229,15 @@ ipcMain.handle("update-set-developer-mode", async (event, payload) => {
     if (result.response !== 0) return updater.getStatus();
   }
   return updater.setDeveloperMode(enabled);
+});
+
+// Settings > Your data when switching: the folder of database copies saved
+// before each update install.
+ipcMain.handle("update-open-backups", async () => {
+  const dir = path.join(dataRoot(), "backups");
+  await ensureDir(dir);
+  const err = await shell.openPath(dir);
+  return { ok: !err, error: err || "" };
 });
 
 // Any webm still in the inflight dir at boot or at the next take start is a

@@ -929,4 +929,195 @@ test("shipped app code only reads a GitHub token for Developer mode updates", ()
   assert.doesNotMatch(installer, /execFileSync\("gh"/, "the installer must not call the GitHub CLI");
 });
 
+test("a newer build's data survives an older build, and every snapshot is a checked copy", () => {
+  const root = tempDir();
+  const dataRoot = path.join(root, "data");
+  db.openDb(dataRoot);
+  db.closeDb();
+  // What a newer build might have written: a table, a column with a default,
+  // a kv key, and a higher schema mark.
+  const { DatabaseSync } = require("node:sqlite");
+  const raw = new DatabaseSync(path.join(dataRoot, "recorder.db"));
+  raw.exec("CREATE TABLE future_things (id TEXT PRIMARY KEY, note TEXT)");
+  raw.exec("INSERT INTO future_things VALUES ('a', 'kept')");
+  raw.exec("ALTER TABLE takes ADD COLUMN future_flag INTEGER NOT NULL DEFAULT 7");
+  raw.exec(
+    "INSERT INTO kv VALUES ('futurePref', 'on'), ('schemaVersion', '99') ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  );
+  raw.close();
+
+  db.openDb(dataRoot);
+  assert.deepEqual(db.schemaInfo(), { schemaVersion: db.SCHEMA_VERSION, dbSchemaVersion: 99, newerData: true });
+  // An older build does its normal writes.
+  db.writeSetup({ screen: true, mic: false, recordFps: 60 });
+  db.writeUpdatePrefs({ developerMode: false, installedChannel: "public", installedVersion: "1.2.0" });
+  db.insertTake({ id: "t1", name: "Take", path: "x.mp4", mime: "video/mp4" });
+
+  const backup = path.join(dataRoot, "backups", "copy.db");
+  const snap = db.snapshotDb(backup);
+  assert.equal(snap.file, backup);
+  assert.ok(snap.size > 0);
+  assert.throws(() => db.snapshotDb(backup), /already exists/);
+  db.closeDb();
+
+  for (const file of [path.join(dataRoot, "recorder.db"), backup]) {
+    const check = new DatabaseSync(file, { readOnly: true });
+    assert.equal(check.prepare("SELECT note FROM future_things WHERE id = 'a'").get().note, "kept");
+    assert.equal(check.prepare("SELECT value FROM kv WHERE key = 'futurePref'").get().value, "on");
+    assert.equal(check.prepare("SELECT value FROM kv WHERE key = 'schemaVersion'").get().value, "99");
+    assert.equal(check.prepare("SELECT future_flag FROM takes WHERE id = 't1'").get().future_flag, 7);
+    assert.equal(check.prepare("SELECT value FROM kv WHERE key = 'updateInstalledChannel'").get().value, "public");
+    check.close();
+  }
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+// A release on disk with its latest.json, for the feed-file test mode.
+async function localRelease(root, appRoot, tag, marker) {
+  fs.writeFileSync(path.join(appRoot, "renderer", "app.js"), "// " + marker);
+  const bundle = await updater.createUpdateBundle(appRoot, path.join(root, marker + ".tar.gz"), { version: tag.slice(1) });
+  const assetName = "simple-recorder-" + tag + "-app.tar.gz";
+  const manifest = path.join(root, marker + "-latest.json");
+  fs.writeFileSync(manifest, JSON.stringify({ assetName, sha256: bundle.sha256 }));
+  return {
+    tag_name: tag,
+    name: "Simple Recorder " + tag,
+    published_at: "2026-10-15T00:00:00Z",
+    assets: [
+      { id: marker + "-a", name: assetName, size: bundle.size, browser_download_url: bundle.path },
+      { id: marker + "-m", name: "latest.json", size: 1, browser_download_url: manifest },
+    ],
+  };
+}
+
+function updaterAppRoot(root) {
+  const appRoot = path.join(root, "app");
+  for (const dir of ["electron", "lib", "renderer"]) fs.mkdirSync(path.join(appRoot, dir), { recursive: true });
+  fs.writeFileSync(path.join(appRoot, "electron", "main.cjs"), "// main");
+  fs.writeFileSync(path.join(appRoot, "lib", "updater.js"), "// lib");
+  fs.writeFileSync(path.join(appRoot, "renderer", "index.html"), "<!doctype html>");
+  fs.writeFileSync(path.join(appRoot, "package.json"), JSON.stringify({ name: "simple-recorder", version: "1.0.0" }));
+  return appRoot;
+}
+
+function setAppVersion(appRoot, version, marker) {
+  fs.writeFileSync(path.join(appRoot, "package.json"), JSON.stringify({ name: "simple-recorder", version }));
+  fs.writeFileSync(path.join(appRoot, "renderer", "app.js"), "// " + marker);
+}
+
+test("a copy moves between public and developer builds and back, saving its data each time", async () => {
+  const root = tempDir();
+  const appRoot = updaterAppRoot(root);
+  const dataRoot = path.join(root, "data");
+  const feeds = {
+    [updater.DEFAULT_REPO]: [await localRelease(root, appRoot, "v1.2.1", "public-121")],
+    [updater.DEV_REPO]: [
+      await localRelease(root, appRoot, "v1.2.2", "dev-122"),
+      await localRelease(root, appRoot, "v1.2.1", "dev-121"),
+    ],
+  };
+  setAppVersion(appRoot, "1.2.1", "public-121");
+
+  db.openDb(dataRoot);
+  db.kvSet("futurePref", "from-a-newer-build");
+  const mgr = updater.createUpdater({
+    appRoot,
+    dataRoot,
+    store: db,
+    feedFile: path.join(root, "feed.json"),
+    resolveDeveloperToken: async () => "developer-token",
+    fetchReleases: async (repo) => feeds[repo],
+    installInfo: { installed: true, owner: false, installDir: "", autoCheckDefault: true },
+  });
+  const appJs = () => fs.readFileSync(path.join(appRoot, "renderer", "app.js"), "utf8");
+  const backupDir = path.join(dataRoot, "backups");
+  const backups = () => (fs.existsSync(backupDir) ? fs.readdirSync(backupDir).sort() : []);
+
+  // A public install on the newest public release: nothing to do.
+  let s = await mgr.checkForUpdates();
+  assert.equal(s.installedChannel, "public");
+  assert.equal(s.updateAvailable, false);
+
+  // Developer mode on: the newest developer build is offered as a switch.
+  s = await mgr.setDeveloperMode(true);
+  assert.equal(s.switchAvailable, true);
+  assert.equal(s.latestTag, "v1.2.2");
+  s = await mgr.installRelease({ tag: s.latestTag });
+  assert.equal(s.error, "");
+  assert.equal(s.installedChannel, "developer");
+  assert.equal(s.currentTag, "v1.2.2");
+  assert.equal(s.needsRestart, true);
+  assert.equal(appJs(), "// dev-122");
+  assert.equal(backups().length, 1);
+  assert.match(backups()[0], /-public-v1\.2\.1-to-developer-v1\.2\.2\.db$/);
+
+  // Developer mode off: the public release is offered even though it is older.
+  s = await mgr.setDeveloperMode(false);
+  assert.equal(s.switchAvailable, true);
+  assert.equal(s.latestTag, "v1.2.1");
+  s = await mgr.installRelease({ tag: s.latestTag });
+  assert.equal(s.installedChannel, "public");
+  assert.equal(s.currentTag, "v1.2.1");
+  assert.equal(appJs(), "// public-121");
+  assert.equal(backups().length, 2);
+  assert.ok(backups().some((name) => /-developer-v1\.2\.2-to-public-v1\.2\.1\.db$/.test(name)));
+
+  // Back on public nothing more is offered; with Developer mode on again, the
+  // developer build this copy no longer has is offered again.
+  s = await mgr.checkForUpdates();
+  assert.equal(s.updateAvailable, false);
+  s = await mgr.setDeveloperMode(true);
+  assert.equal(s.switchAvailable, true);
+  assert.equal(s.latestTag, "v1.2.2");
+  assert.equal(db.readUpdatePrefs().installedChannel, "public");
+
+  // Data from the newer build stayed through both switches, and each backup holds it.
+  assert.equal(db.kvGet("futurePref", ""), "from-a-newer-build");
+  const { DatabaseSync } = require("node:sqlite");
+  for (const name of backups()) {
+    const copy = new DatabaseSync(path.join(backupDir, name), { readOnly: true });
+    assert.equal(copy.prepare("SELECT value FROM kv WHERE key = 'futurePref'").get().value, "from-a-newer-build");
+    copy.close();
+  }
+  db.closeDb();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("nothing installs when the data copy fails, and a source checkout is never rewritten", async () => {
+  const root = tempDir();
+  const appRoot = updaterAppRoot(root);
+  const feed = [await localRelease(root, appRoot, "v2.0.0", "new")];
+  setAppVersion(appRoot, "1.0.0", "old");
+  const appJs = () => fs.readFileSync(path.join(appRoot, "renderer", "app.js"), "utf8");
+  const base = {
+    appRoot,
+    dataRoot: path.join(root, "data"),
+    feedFile: path.join(root, "feed.json"),
+    fetchReleases: async () => feed,
+  };
+
+  const failing = updater.createUpdater({
+    ...base,
+    store: {
+      snapshotDb: () => {
+        throw new Error("disk full");
+      },
+    },
+    installInfo: { installed: true, owner: false, installDir: "", autoCheckDefault: true },
+  });
+  assert.equal((await failing.checkForUpdates()).updateAvailable, true);
+  let s = await failing.installRelease({ tag: "v2.0.0" });
+  assert.equal(s.status, "error");
+  assert.match(s.error, /nothing was installed.*disk full/);
+  assert.equal(appJs(), "// old");
+
+  const checkout = updater.createUpdater({ ...base, installInfo: { installed: false, autoCheckDefault: false } });
+  s = await checkout.checkForUpdates();
+  assert.equal(s.updateAvailable, false);
+  s = await checkout.installRelease({ tag: "v2.0.0" });
+  assert.match(s.error, /source checkout/);
+  assert.equal(appJs(), "// old");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 

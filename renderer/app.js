@@ -2576,6 +2576,7 @@ function paintUpdates() {
     if (u.status === "downloading") summary.textContent = "New update detected";
     else if (u.status === "installing") summary.textContent = "New update detected";
     else if (u.needsRestart) summary.textContent = "Restarting";
+    else if (u.switchAvailable && u.latestTag) summary.textContent = u.channel === "developer" ? "Developer build ready" : "Public release ready";
     else if (u.updateAvailable && u.latestTag) summary.textContent = "New update detected";
     else if (u.status === "checking") summary.textContent = "Checking for updates";
     else if (u.status === "error") summary.textContent = "Could not check · " + currentTag;
@@ -2598,6 +2599,8 @@ function paintUpdates() {
       u.error ||
       (u.needsRestart
         ? "Restarting to finish the update."
+        : u.switchAvailable && u.latestTag
+          ? "Installing " + u.latestTag + " moves this copy to " + channelLabel(u.channel) + "s. Your data stays, and a copy is saved first."
         : u.updateAvailable && u.latestTag
           ? u.latestTag + " is ready to download."
           : u.developerMode
@@ -2626,6 +2629,29 @@ function paintDeveloperUpdates() {
   }
   const note = document.querySelector("[data-dev-updates-note]");
   if (note) note.textContent = on && u.error ? u.error : "";
+  const installed = document.querySelector("[data-installed-channel]");
+  if (installed) {
+    installed.textContent =
+      u.installMode === "development"
+        ? "This copy is a source checkout."
+        : u.installedChannel === "developer"
+          ? "This copy is a developer build."
+          : "This copy is a public release.";
+  }
+}
+
+function channelLabel(channel) {
+  return channel === "developer" ? "developer build" : "public release";
+}
+
+async function onOpenBackups() {
+  if (!api || typeof api.openDataBackups !== "function") return;
+  try {
+    const res = await api.openDataBackups();
+    if (res && !res.ok) toast("Could not open the backups folder.", true);
+  } catch {
+    toast("Could not open the backups folder.", true);
+  }
 }
 
 async function onDeveloperUpdatesSwitch() {
@@ -2677,6 +2703,7 @@ function wireStudio() {
   }
   document.querySelector("[data-update-download]")?.addEventListener("click", () => void onUpdateDownload());
   document.querySelector("[data-dev-updates-switch]")?.addEventListener("click", () => void onDeveloperUpdatesSwitch());
+  document.querySelector("[data-open-backups]")?.addEventListener("click", () => void onOpenBackups());
   if (api && typeof api.onUpdateState === "function") {
     api.onUpdateState((state) => {
       if (!state) return;
