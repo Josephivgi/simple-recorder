@@ -2638,6 +2638,40 @@ function paintDeveloperUpdates() {
           ? "This copy is a developer build."
           : "This copy is a public release.";
   }
+  paintBackups(u);
+}
+
+function paintBackups(u) {
+  const keep = u.backupKeep || "2";
+  document.querySelectorAll("[data-backup-keep]").forEach((btn) => {
+    btn.setAttribute("aria-checked", String(btn.getAttribute("data-backup-keep") === keep));
+    btn.disabled = u.status === "downloading" || u.status === "installing";
+  });
+  const note = document.querySelector("[data-backup-summary]");
+  if (!note) return;
+  const count = Number(u.backupCount) || 0;
+  const held = count === 1 ? "1 backup" : count + " backups";
+  const size = formatBytes(u.backupBytes) || "0 KB";
+  note.textContent =
+    keep === "off"
+      ? "Backups are off: updates install without a copy of your data. The folder holds " + held + " (" + size + ")."
+      : keep === "all"
+        ? "Every backup is kept. The folder holds " + held + " (" + size + ")."
+        : "The newest " + keep + " are kept and older ones are removed. The folder holds " + held + " (" + size + ").";
+}
+
+async function onBackupKeep(event) {
+  const btn = event.target.closest("[data-backup-keep]");
+  if (!btn || btn.disabled || !api || typeof api.updateSetBackupKeep !== "function") return;
+  try {
+    const state = await api.updateSetBackupKeep(btn.getAttribute("data-backup-keep"));
+    if (state) {
+      session.update = state;
+      paintUpdates();
+    }
+  } catch {
+    toast("Could not change the backup setting.", true);
+  }
 }
 
 function channelLabel(channel) {
@@ -2704,6 +2738,7 @@ function wireStudio() {
   document.querySelector("[data-update-download]")?.addEventListener("click", () => void onUpdateDownload());
   document.querySelector("[data-dev-updates-switch]")?.addEventListener("click", () => void onDeveloperUpdatesSwitch());
   document.querySelector("[data-open-backups]")?.addEventListener("click", () => void onOpenBackups());
+  document.querySelector("[data-backup-keep-group]")?.addEventListener("click", (event) => void onBackupKeep(event));
   if (api && typeof api.onUpdateState === "function") {
     api.onUpdateState((state) => {
       if (!state) return;

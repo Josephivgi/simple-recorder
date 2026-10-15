@@ -203,11 +203,22 @@
               </header>
               <p class="panel-note">
                 Moving between public releases and developer builds keeps your settings, takes, and
-                recordings. Before any update installs, Simple Recorder saves a checked copy of its
+                recordings. Before an update installs, Simple Recorder saves a checked copy of its
                 database to the backups folder, named for the build it came from, and installs nothing
                 if that copy fails. Settings one build does not know about stay in place for the build
                 that does.
               </p>
+              <div class="field">
+                <span class="field-label" id="backup-keep-label">Backups to keep</span>
+                <div class="seg seg-choice" role="radiogroup" aria-labelledby="backup-keep-label" data-backup-keep-group>
+                  <button type="button" role="radio" data-backup-keep="off" aria-checked="false"><strong>Off</strong></button>
+                  <button type="button" role="radio" data-backup-keep="2" aria-checked="true"><strong>2</strong></button>
+                  <button type="button" role="radio" data-backup-keep="5" aria-checked="false"><strong>5</strong></button>
+                  <button type="button" role="radio" data-backup-keep="10" aria-checked="false"><strong>10</strong></button>
+                  <button type="button" role="radio" data-backup-keep="all" aria-checked="false"><strong>All</strong></button>
+                </div>
+              </div>
+              <p class="panel-note" data-backup-summary></p>
             </section>
           </div>
         </div>

@@ -2240,6 +2240,13 @@ ipcMain.handle("update-open-backups", async () => {
   return { ok: !err, error: err || "" };
 });
 
+// Settings > Backups to keep: off, a count, or all. A lower count removes the
+// oldest extras right away.
+ipcMain.handle("update-set-backup-keep", async (_event, payload) => {
+  if (!updater) return null;
+  return updater.setBackupKeep(payload && payload.keep);
+});
+
 // Any webm still in the inflight dir at boot or at the next take start is a
 // take the renderer lost (crash). Register it instead of losing it.
 let recoverInflightBusy = false;

@@ -104,6 +104,7 @@ contextBridge.exposeInMainWorld("rec", {
   updateInstall: (payload) => ipcRenderer.invoke("update-install", payload || {}),
   updateSetDeveloperMode: (enabled) => ipcRenderer.invoke("update-set-developer-mode", { enabled: enabled === true }),
   openDataBackups: () => ipcRenderer.invoke("update-open-backups"),
+  updateSetBackupKeep: (keep) => ipcRenderer.invoke("update-set-backup-keep", { keep: String(keep || "") }),
   onUpdateState: (handler) => {
     const listen = (_event, payload) => handler(payload);
     ipcRenderer.on("update-state", listen);

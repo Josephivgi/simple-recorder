@@ -1,8 +1,9 @@
 {
   "name": "simple-recorder",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "description": "Standalone screen recorder for Windows with a floating recorder bar",
+  "license": "MIT",
   "main": "electron/main.cjs",
   "repository": {
     "type": "git",

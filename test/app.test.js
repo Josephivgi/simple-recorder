@@ -1120,4 +1120,85 @@ test("nothing installs when the data copy fails, and a source checkout is never 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("renderer scripts parse the way their pages load them", () => {
+  const { spawnSync } = require("child_process");
+  const dir = path.join(__dirname, "..", "renderer");
+  for (const page of fs.readdirSync(dir).filter((n) => n.endsWith(".html"))) {
+    const html = fs.readFileSync(path.join(dir, page), "utf8");
+    for (const m of html.matchAll(/<script([^>]*)\ssrc="([^"]+)"/g)) {
+      const asModule = /type="module"/.test(m[1]);
+      const src = fs.readFileSync(path.join(dir, m[2]), "utf8");
+      const res = spawnSync(process.execPath, ["--input-type=" + (asModule ? "module" : "commonjs"), "--check"], {
+        input: src,
+        encoding: "utf8",
+      });
+      assert.equal(res.status, 0, page + " > " + m[2] + " does not parse: " + res.stderr);
+    }
+  }
+});
+
+test("backups keep the newest few, can be turned off, and leave other files alone", async () => {
+  assert.deepEqual(db.BACKUP_KEEP_CHOICES, updater.BACKUP_KEEP_CHOICES);
+  assert.equal(db.BACKUP_KEEP_DEFAULT, updater.BACKUP_KEEP_DEFAULT);
+  const root = tempDir();
+  const appRoot = updaterAppRoot(root);
+  const dataRoot = path.join(root, "data");
+  const feed = [await localRelease(root, appRoot, "v2.0.0", "new")];
+  setAppVersion(appRoot, "1.0.0", "old");
+  const backupDir = path.join(dataRoot, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const seeded = ["01", "02", "03"].map((m) => "recorder-2026-" + m + "-01T00-00-00-000Z-public-v1.0.0-to-public-v1.0.1.db");
+  for (const name of seeded) fs.writeFileSync(path.join(backupDir, name), "old copy");
+  fs.writeFileSync(path.join(backupDir, "my-notes.txt"), "not a backup");
+  const backups = () => fs.readdirSync(backupDir).filter((n) => n.endsWith(".db")).sort();
+
+  db.openDb(dataRoot);
+  assert.equal(db.readUpdatePrefs().backupKeep, "2");
+  db.writeUpdatePrefs({ backupKeep: "7" });
+  assert.equal(db.readUpdatePrefs().backupKeep, "2", "an unknown limit is ignored");
+  const mgr = updater.createUpdater({
+    appRoot,
+    dataRoot,
+    store: db,
+    feedFile: path.join(root, "feed.json"),
+    fetchReleases: async () => feed,
+    installInfo: { installed: true, owner: false, installDir: "", autoCheckDefault: true },
+  });
+  let s = mgr.getStatus();
+  assert.equal(s.backupKeep, "2");
+  assert.equal(s.backupCount, 3);
+  assert.equal(s.backupBytes, 3 * "old copy".length);
+
+  // A new backup, then only the newest two stay.
+  s = await mgr.installRelease({ tag: "v2.0.0" });
+  assert.equal(s.error, "");
+  assert.equal(backups().length, 2);
+  assert.equal(backups()[0], seeded[2]);
+  assert.match(backups()[1], /-to-public-v2\.0\.0\.db$/);
+  assert.equal(s.backupCount, 2);
+
+  // Off: the next install makes no copy and keeps the ones there.
+  s = mgr.setBackupKeep("off");
+  assert.equal(s.backupKeep, "off");
+  assert.equal(db.readUpdatePrefs().backupKeep, "off");
+  s = await mgr.installRelease({ tag: "v2.0.0" });
+  assert.equal(s.error, "");
+  assert.equal(backups().length, 2);
+
+  // All keeps every one; lowering the limit removes the oldest right away.
+  mgr.setBackupKeep("all");
+  await mgr.installRelease({ tag: "v2.0.0" });
+  await new Promise((r) => setTimeout(r, 5));
+  await mgr.installRelease({ tag: "v2.0.0" });
+  assert.equal(backups().length, 4);
+  assert.equal(mgr.setBackupKeep("bogus").backupKeep, "all");
+  s = mgr.setBackupKeep("2");
+  assert.equal(backups().length, 2);
+  assert.ok(!backups().includes(seeded[2]));
+  assert.equal(s.backupCount, 2);
+  assert.ok(fs.existsSync(path.join(backupDir, "my-notes.txt")), "files that are not backups are never removed");
+  db.closeDb();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 

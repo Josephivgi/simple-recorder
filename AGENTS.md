@@ -96,7 +96,8 @@ pushes from the dev repo to the public repo on its own.
   pickers, plus a bottom dock with Start Recorder Bar. Takes is the saved
   files grouped under the day folder each one sits in (recent takes, open
   folder). Settings holds Developer mode updates and Your data when
-  switching (which channel this copy is, and the backups folder). The studio page fits the
+  switching (which channel this copy is, Backups to keep, and the backups
+  folder). The studio page fits the
   window; the source list and the takes grid scroll inside their own boxes.
   The boxes set up the take; once the bar is open they lock and follow the
   bar's changes. The take engine (getDisplayMedia, MediaRecorder, chunk
@@ -201,7 +202,11 @@ Data safety across channels:
   `data/backups/recorder-<time>-<fromChannel>-<fromTag>-to-<toChannel>-<toTag>.db`,
   checked with `PRAGMA quick_check`, never overwriting a file. If the copy
   fails, nothing installs. Settings > Your data when switching opens the
-  folder. Backups are never deleted by the app.
+  folder and sets Backups to keep (`updateBackupKeep`: off / 2 / 5 / 10 /
+  all, default 2). After a good backup, and when the limit is lowered, the
+  oldest files matching the backup name beyond the limit are removed; other
+  files in the folder are never touched. Off makes no copy before an install
+  and keeps the ones already there.
 - Takes, recordings, and logs live outside the app tree and are never touched
   by an install. Every install ends in a relaunch, even when a channel switch
   keeps the same version number.
