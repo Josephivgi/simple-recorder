@@ -1,0 +1,755 @@
+/* Recorder bar. An always-on-top floating strip the user parks over the
+   target window while setting up a take, and the small countdown/recording
+   card in the same window. Two looks share this file:
+     size   - the wide bar, docked against the top screen edge
+     timer  - the arming countdown card
+     wait   - the "Record when ready" card
+     recording - the compact clock + stop card
+   The window itself is transparent; the card fills it. */
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/ibm-plex-sans-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("fonts/ibm-plex-sans-600.woff2") format("woff2");
+}
+
+:root {
+  --stage: oklch(0.12 0.01 255);
+  --on-stage: oklch(0.99 0.01 255);
+  --stage-muted: oklch(0.82 0.01 255);
+  --accent: oklch(0.46 0.12 255);
+  --danger: oklch(0.48 0.14 25);
+  --record: oklch(0.56 0.22 25);
+  --record-ink: oklch(0.99 0.02 25);
+  --radius: 8px;
+  --font: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --stage-line: color-mix(in oklch, var(--on-stage) 12%, transparent);
+  --stage-well: color-mix(in oklch, var(--on-stage) 8%, transparent);
+  --stage-press: color-mix(in oklch, var(--on-stage) 16%, transparent);
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  font-family: var(--font);
+  color: var(--on-stage);
+  user-select: none;
+}
+
+/* Laptops: a touchpad tap or a finger press acts at once, with no double
+   tap zoom wait and no text selection eating the press. */
+button {
+  touch-action: manipulation;
+  -webkit-user-select: none;
+}
+
+.countdown-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  padding: 8px 12px;
+  box-sizing: border-box;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklch, var(--on-stage) 14%, transparent);
+  background: var(--stage);
+  color-scheme: dark;
+  overflow: hidden;
+  /* The whole card moves the window; buttons override with their own cursor. */
+  cursor: grab;
+}
+.countdown-card.dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+.countdown-card button {
+  cursor: pointer;
+}
+
+/* Docked mode: the bar hugs the top edge, so round only the bottom. */
+.countdown-card[data-mode="size"] {
+  border-radius: 0 0 10px 10px;
+  border-width: 0 1px 1px;
+  padding: 0;
+}
+
+/* The bar. One row: the take controls, then clock / stop / close. It docks
+   at the top of the screen in use and has no drag region, which can swallow
+   button clicks on Windows. */
+
+.record-bar {
+  display: none;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 0;
+  width: 100%;
+  padding: 0 8px;
+  box-sizing: border-box;
+  -webkit-app-region: no-drag;
+}
+
+.countdown-card[data-mode="size"] .record-bar,
+.countdown-card[data-mode="recording"] .record-bar,
+.countdown-card[data-mode="wait"] .record-bar {
+  display: flex;
+}
+
+/* Record. The one red pill in the bar. */
+
+button.record-bar-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--record);
+  color: var(--record-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.record-bar-go .go-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+button.record-bar-go:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Loading: the bar is up but the screen capture is still opening. Record
+   turns into a spinner until it is ready; Area, Delay, and X still work. */
+.countdown-card[data-loading] button.record-bar-go:disabled {
+  opacity: 0.8;
+  cursor: progress;
+}
+
+.countdown-card[data-loading] button.record-bar-go .go-dot {
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 2px solid color-mix(in oklch, currentColor 35%, transparent);
+  border-top-color: currentColor;
+  background: transparent;
+  animation: record-go-spin 0.8s linear infinite;
+}
+
+@keyframes record-go-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Field wells: Delay, Max. A muted name, a value, and edge steppers. */
+
+.record-bar-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 2px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: var(--rc-stage-well, color-mix(in oklch, var(--on-stage) 10%, transparent));
+  -webkit-app-region: no-drag;
+}
+
+.record-bar-field .field-name {
+  padding: 0 2px 0 7px;
+  color: var(--stage-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.record-bar-field [data-overlay-delay],
+.record-bar-field [data-overlay-fps] {
+  min-width: 4ch;
+  padding: 0 2px;
+  color: var(--on-stage);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.record-bar-field button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--on-stage);
+  font: inherit;
+  cursor: pointer;
+}
+
+.record-bar-field button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .record-bar-field button:hover:not(:disabled) {
+    background: var(--stage-press);
+  }
+}
+
+/* What to record: Auto (the screen in use) or a dragged Area, as one
+   segmented well. */
+
+/* The well hugs its buttons; stretched it left a band of dead pixels that
+   looked like part of Area but did nothing on tap. */
+.record-bar-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  min-width: 0;
+  height: 36px;
+  padding: 0 2px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: var(--rc-stage-well, color-mix(in oklch, var(--on-stage) 10%, transparent));
+}
+
+.record-bar-target button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--stage-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.record-bar-target button[aria-pressed="true"] {
+  background: var(--stage-press);
+  color: var(--on-stage);
+}
+
+.record-bar-target .target-size:empty {
+  display: none;
+}
+
+.record-bar-target .target-size {
+  color: var(--stage-muted);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (hover: hover) {
+  .record-bar-target button:hover:not([aria-pressed="true"]) {
+    color: var(--on-stage);
+  }
+}
+
+/* Sound: whether the take includes the microphone. Off is the default; on
+   shows the speaker waves so a live mic is visible before Record. */
+
+.record-bar-sound {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--rc-stage-well, color-mix(in oklch, var(--on-stage) 10%, transparent));
+  color: var(--stage-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+
+.record-bar-sound[aria-pressed="true"] {
+  background: var(--stage-press);
+  color: var(--on-stage);
+}
+
+.record-bar-sound .sound-waves {
+  display: none;
+}
+
+.record-bar-sound[aria-pressed="true"] .sound-waves {
+  display: block;
+}
+
+.record-bar-sound[aria-pressed="true"] .sound-off-line {
+  display: none;
+}
+
+.record-bar-sound span {
+  font-size: 12.5px;
+}
+
+@media (hover: hover) {
+  .record-bar-sound:hover:not([aria-pressed="true"]) {
+    color: var(--on-stage);
+  }
+}
+
+/* Clock, stop, close. The trailing cluster. */
+
+.record-bar-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 5.5ch;
+  padding: 0 4px;
+  color: var(--on-stage);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.record-bar-clock[data-empty="true"] {
+  visibility: hidden;
+  min-width: 0;
+  padding: 0;
+}
+
+.record-bar-clock .live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.live-dot[hidden] {
+  display: none;
+}
+
+.countdown-card[data-mode="recording"] .live-dot {
+  animation: record-live-pulse 1.2s ease-in-out infinite;
+}
+
+button.record-bar-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--record);
+  color: var(--record-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.record-bar-stop .stop-square {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+/* Pause sits next to the clock only while a take is rolling. Pressed
+   (paused) it stays lit so the frozen state is obvious. */
+button.record-bar-pause {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--rc-stage-well, color-mix(in oklch, var(--on-stage) 10%, transparent));
+  color: var(--on-stage);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.record-bar-pause .pause-bars {
+  width: 10px;
+  height: 10px;
+  border-left: 3px solid currentColor;
+  border-right: 3px solid currentColor;
+  box-sizing: border-box;
+}
+
+button.record-bar-pause[aria-pressed="true"] {
+  background: var(--stage-press);
+}
+
+button.record-bar-pause[aria-pressed="true"] .pause-bars {
+  /* Resume reads as a play triangle. */
+  width: 0;
+  height: 0;
+  border-left: 9px solid currentColor;
+  border-right: 0;
+  border-top: 5.5px solid transparent;
+  border-bottom: 5.5px solid transparent;
+  border-radius: 0;
+  background: transparent;
+}
+
+@media (hover: hover) {
+  button.record-bar-pause:hover {
+    background: var(--stage-press);
+  }
+}
+
+.record-bar-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--stage-muted);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .record-bar-close:hover {
+    background: var(--stage-press);
+    color: var(--on-stage);
+  }
+}
+
+/* The small cards: timer / wait / recording share one column layout. The
+   mode switches which of the three children shows. */
+
+.countdown-card > [data-overlay-label] {
+  margin: 0;
+  color: var(--stage-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.countdown-card > [data-record-countdown] {
+  margin: 0;
+  color: var(--on-stage);
+  font-size: 30px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
+}
+
+.countdown-card[data-mode="timer"] .record-bar,
+.countdown-card[data-mode="timer"] [data-overlay-stop],
+.countdown-card[data-mode="timer"] [data-overlay-start],
+.countdown-card[data-mode="size"] [data-overlay-label],
+.countdown-card[data-mode="size"] > [data-record-countdown],
+.countdown-card[data-mode="recording"] [data-overlay-label],
+.countdown-card[data-mode="recording"] > [data-record-countdown],
+.countdown-card[data-mode="recording"] [data-overlay-start],
+.countdown-card[data-mode="wait"] [data-overlay-stop],
+.countdown-card[data-mode="wait"] > [data-record-countdown] {
+  display: none;
+}
+
+/* Timer mode: the countdown number is the only content. */
+.countdown-card[data-mode="timer"] > [data-record-countdown] {
+  font-size: 44px;
+}
+
+/* Wait and recording modes: a slim card. The bar keeps only the controls
+   that fit 240px. */
+.countdown-card[data-mode="wait"] .record-bar-field,
+.countdown-card[data-mode="wait"] .record-bar-target,
+.countdown-card[data-mode="wait"] .record-bar-sound,
+.countdown-card[data-mode="recording"] .record-bar-field,
+.countdown-card[data-mode="recording"] .record-bar-target,
+.countdown-card[data-mode="recording"] .record-bar-sound,
+.countdown-card[data-mode="recording"] .record-bar-go {
+  display: none;
+}
+
+/* Stop and pause only exist once a take is rolling. */
+.countdown-card[data-mode="size"] [data-overlay-stop],
+.countdown-card[data-mode="size"] [data-overlay-pause],
+.countdown-card[data-mode="wait"] [data-overlay-stop],
+.countdown-card[data-mode="wait"] [data-overlay-pause],
+.countdown-card[data-mode="timer"] [data-overlay-pause] {
+  display: none;
+}
+
+/* A paused take reads differently from a live one: the dot stops pulsing
+   and the label says so. */
+.countdown-card[data-mode="recording"] .record-bar-clock[data-paused="true"] .live-dot {
+  animation: none;
+  opacity: 0.35;
+}
+
+/* While the countdown is armed the take controls lock out. Record stays so
+   a press skips the rest of the wait. */
+.countdown-card[data-arming] .record-bar-field,
+.countdown-card[data-arming] .record-bar-target,
+.countdown-card[data-arming] .record-bar-sound {
+  display: none;
+}
+
+/* The pick role is the area picker: a dim full screen layer with a clear
+   box where the drag is. */
+html[data-overlay-role="pick"] .area-pick[hidden],
+html[data-overlay-role="pick"] .countdown-card {
+  display: none;
+}
+
+html[data-overlay-role="pick"] .area-pick {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in oklch, var(--stage) 38%, transparent);
+  cursor: crosshair;
+  /* A finger drag draws the box instead of scrolling, which cancelled it. */
+  touch-action: none;
+}
+
+.area-pick-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid var(--on-stage);
+  background: color-mix(in oklch, var(--on-stage) 8%, transparent);
+  pointer-events: none;
+}
+
+.area-pick-size {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--stage);
+  color: var(--on-stage);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.area-pick-cancel {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid color-mix(in oklch, var(--on-stage) 30%, transparent);
+  border-radius: 8px;
+  background: var(--stage);
+  color: var(--on-stage);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transform: translateX(-50%);
+}
+
+.area-pick-size:empty,
+.area-pick-box[hidden],
+.area-pick-hint[hidden] {
+  display: none;
+}
+
+.area-pick-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--stage);
+  color: var(--on-stage);
+  font-size: 14px;
+  font-weight: 500;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* The window pick layer reuses the picker window: a centered card of
+   window thumbnails over the same dim layer. */
+html[data-overlay-role="pick"] .win-pick[hidden] {
+  display: none;
+}
+
+html[data-overlay-role="pick"] .win-pick {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in oklch, var(--stage) 55%, transparent);
+}
+
+.win-pick-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: min(860px, 92vw);
+  max-height: 84vh;
+  padding: 18px;
+  border-radius: 12px;
+  border: 1px solid var(--stage-line);
+  background: var(--stage);
+}
+
+.win-pick-hint {
+  margin: 0;
+  color: var(--on-stage);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.win-pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+  width: 100%;
+  overflow-y: auto;
+}
+
+.win-pick-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--stage-line);
+  border-radius: 8px;
+  background: var(--stage-well);
+  color: var(--on-stage);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+}
+
+.win-pick-item:hover {
+  background: var(--stage-press);
+}
+
+.win-pick-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 4px;
+  background: oklch(0 0 0);
+}
+
+.win-pick-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.win-pick-empty {
+  margin: 0;
+  padding: 12px;
+  color: var(--stage-muted);
+  font-size: 13px;
+}
+
+.win-pick .area-pick-cancel {
+  position: static;
+  transform: none;
+}
+
+/* The frame role draws only the crop outline. */
+html[data-overlay-role="frame"] {
+  background: transparent;
+}
+
+html[data-overlay-role="frame"] body,
+html[data-overlay-role="frame"] .countdown-card {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+html[data-overlay-role="frame"] .record-bar,
+html[data-overlay-role="frame"] [data-overlay-label],
+html[data-overlay-role="frame"] [data-record-countdown] {
+  display: none;
+}
+
+html[data-overlay-role="frame"] .countdown-card {
+  border: 2px solid color-mix(in oklch, var(--on-stage) 72%, transparent);
+  border-radius: 0;
+  pointer-events: none;
+}
+
+@media (hover: hover) {
+  button.record-bar-go:hover:not(:disabled) {
+    background: color-mix(in oklch, var(--record) 82%, var(--on-stage));
+  }
+
+  button.record-bar-stop:hover:not(:disabled) {
+    background: color-mix(in oklch, var(--record) 82%, var(--on-stage));
+  }
+}
+
+@keyframes record-live-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}

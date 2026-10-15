@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="200" viewBox="0 0 520 200" font-family="Segoe UI, system-ui, sans-serif">
+  <title>The Simple Recorder setup window installs the app in a few seconds</title>
+  <rect x="0.5" y="0.5" width="519" height="199" rx="8" fill="#ffffff" stroke="#c9cfd8"/>
+  <path d="M0.5 8.5a8 8 0 0 1 8-8h503a8 8 0 0 1 8 8v27h-519z" fill="#f3f5f8"/>
+  <line x1="0.5" y1="36" x2="519.5" y2="36" stroke="#d7dce3"/>
+  <text x="16" y="23" font-size="13" fill="#2b3340">Simple Recorder setup</text>
+  <line x1="460" y1="18" x2="470" y2="18" stroke="#6b7480" stroke-width="1.4"/>
+  <path d="M490 13l10 10M500 13l-10 10" stroke="#6b7480" stroke-width="1.4"/>
+  <text x="28" y="78" font-size="15" font-weight="600" fill="#1d2430">Installing Simple Recorder...</text>
+  <rect x="28" y="96" width="464" height="14" rx="3" fill="#e6e9ee"/>
+  <rect x="28" y="96" width="300" height="14" rx="3" fill="#026fd7"/>
+  <line x1="0.5" y1="142" x2="519.5" y2="142" stroke="#e6e9ee"/>
+  <rect x="402" y="156" width="90" height="28" rx="4" fill="#f3f5f8" stroke="#c9cfd8"/>
+  <text x="447" y="175" font-size="13" fill="#2b3340" text-anchor="middle">Cancel</text>
+</svg>

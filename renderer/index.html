@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; media-src 'self' take:; img-src 'self' take: data:"
+    />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Simple Recorder</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"><span class="record-dot"></span></span>
+          <span>Simple Recorder</span>
+        </div>
+        <nav class="nav" role="tablist" aria-label="Pages">
+          <button type="button" role="tab" class="nav-link" id="tab-studio" data-page="studio" aria-selected="true" aria-controls="page-studio">Studio</button>
+          <button type="button" role="tab" class="nav-link" id="tab-takes" data-page="takes" aria-selected="false" aria-controls="page-takes" tabindex="-1">Takes</button>
+          <button type="button" role="tab" class="nav-link" id="tab-settings" data-page="settings" aria-selected="false" aria-controls="page-settings" tabindex="-1">Settings</button>
+        </nav>
+        <section class="sidebar-update" aria-labelledby="update-title" data-update-box>
+          <header class="panel-head">
+            <div class="panel-title">
+              <h2 id="update-title">Updates</h2>
+              <p class="panel-sub" data-update-summary>Up to date</p>
+            </div>
+          </header>
+          <button type="button" class="primary update-download" data-update-download hidden>Download</button>
+          <p class="panel-note" data-update-note>Updates come from GitHub Releases.</p>
+        </section>
+      </aside>
+      <main class="main">
+      <header class="head">
+        <div class="head-copy">
+          <h1>Recorder</h1>
+          <p data-page-blurb>Set up the take, then start the recorder bar.</p>
+        </div>
+      </header>
+
+      <div class="pages">
+      <div class="page page-studio" id="page-studio" role="tabpanel" aria-labelledby="tab-studio" data-page-panel="studio">
+      <div class="page-body">
+        <p class="lock-note" data-lock-note hidden>
+          The recorder bar is open. Change the take from the bar; these boxes follow along.
+        </p>
+
+        <div class="studio" data-studio>
+          <section class="panel panel-source" aria-label="Source">
+            <div class="source-actions" data-source-tools>
+              <button type="button" data-source-full aria-pressed="true">Full screen</button>
+              <button type="button" data-source-draw aria-pressed="false">Draw crop</button>
+              <button type="button" data-source-clear hidden>Clear crop</button>
+            </div>
+            <div class="source-body" data-source-body></div>
+          </section>
+
+          <section class="panel panel-mic" aria-labelledby="mic-title">
+            <header class="panel-head">
+              <div class="panel-title">
+                <h2 id="mic-title">Microphone</h2>
+                <p class="panel-sub" data-mic-summary>Sound off</p>
+              </div>
+              <button type="button" class="switch" role="switch" aria-checked="false" aria-label="Record sound" data-mic-switch>
+                <span class="switch-track"><span class="switch-thumb"></span></span>
+              </button>
+            </header>
+            <div class="field">
+              <span class="field-label" id="mic-input-label">Input</span>
+              <div class="picker" data-mic-picker></div>
+            </div>
+            <div class="field">
+              <span class="field-label">Level</span>
+              <div class="meter-row">
+                <div class="meter" data-mic-meter role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+                <button type="button" class="secondary small" data-mic-test aria-pressed="false">Test</button>
+              </div>
+            </div>
+            <p class="panel-note" data-mic-note></p>
+          </section>
+
+          <section class="panel panel-fps" aria-labelledby="fps-title">
+            <header class="panel-head">
+              <div class="panel-title">
+                <h2 id="fps-title">Frame rate</h2>
+                <p class="panel-sub">Higher is smoother and makes bigger files.</p>
+              </div>
+            </header>
+            <div class="seg seg-choice" role="radiogroup" aria-labelledby="fps-title" data-fps-group>
+              <button type="button" role="radio" data-fps="24" aria-checked="false"><strong>24</strong><span>Film</span></button>
+              <button type="button" role="radio" data-fps="30" aria-checked="true"><strong>30</strong><span>Standard</span></button>
+              <button type="button" role="radio" data-fps="60" aria-checked="false"><strong>60</strong><span>Smooth</span></button>
+            </div>
+          </section>
+
+          <section class="panel panel-delay" aria-labelledby="delay-title">
+            <header class="panel-head">
+              <div class="panel-title">
+                <h2 id="delay-title">Start delay</h2>
+                <p class="panel-sub" data-delay-summary>Record starts right away.</p>
+              </div>
+            </header>
+            <div class="seg seg-choice" role="radiogroup" aria-labelledby="delay-title" data-delay-group>
+              <button type="button" role="radio" data-delay="0" aria-checked="true"><strong>Off</strong></button>
+              <button type="button" role="radio" data-delay="3000" aria-checked="false"><strong>3</strong><span>sec</span></button>
+              <button type="button" role="radio" data-delay="5000" aria-checked="false"><strong>5</strong><span>sec</span></button>
+              <button type="button" role="radio" data-delay="10000" aria-checked="false"><strong>10</strong><span>sec</span></button>
+            </div>
+          </section>
+
+          <section class="panel panel-format" aria-labelledby="format-title">
+            <header class="panel-head">
+              <div class="panel-title">
+                <h2 id="format-title">File format</h2>
+                <p class="panel-sub">MP4 plays everywhere. It is the only format for now.</p>
+              </div>
+            </header>
+            <div class="seg seg-choice" role="radiogroup" aria-labelledby="format-title" data-format-group>
+              <button type="button" role="radio" data-format="mp4" aria-checked="true"><strong>MP4</strong><span>Everywhere</span></button>
+              <button type="button" role="radio" data-format="webm" aria-checked="false" disabled aria-disabled="true"><strong>WebM</strong><span>Coming soon</span></button>
+            </div>
+          </section>
+
+          <section class="panel panel-quality" aria-labelledby="quality-title">
+            <header class="panel-head">
+              <div class="panel-title">
+                <h2 id="quality-title">Quality</h2>
+                <p class="panel-sub" data-quality-summary>Records at 1080p.</p>              </div>
+            </header>
+            <div class="seg seg-choice seg-heights" role="radiogroup" aria-labelledby="quality-title" data-quality-group>
+              <button type="button" role="radio" data-quality="720p" aria-checked="false"><strong>720p</strong></button>
+              <button type="button" role="radio" data-quality="1080p" aria-checked="true"><strong>1080p</strong></button>
+              <button type="button" role="radio" data-quality="1440p" aria-checked="false"><strong>1440p</strong></button>
+            </div>
+          </section>
+
+          <section class="panel panel-autostop" aria-labelledby="autostop-title">
+            <header class="panel-head">
+              <div class="panel-title">
+                <h2 id="autostop-title">Auto stop</h2>
+                <p class="panel-sub" data-autostop-summary>Recording runs until you stop it.</p>
+              </div>
+            </header>
+            <div class="seg seg-choice" role="radiogroup" aria-labelledby="autostop-title" data-autostop-group>
+              <button type="button" role="radio" data-autostop="0" aria-checked="true"><strong>Off</strong></button>
+              <button type="button" role="radio" data-autostop="300000" aria-checked="false"><strong>5</strong><span>min</span></button>
+              <button type="button" role="radio" data-autostop="900000" aria-checked="false"><strong>15</strong><span>min</span></button>
+              <button type="button" role="radio" data-autostop="1800000" aria-checked="false"><strong>30</strong><span>min</span></button>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <footer class="dock" data-dock>
+        <dl class="dock-summary" data-dock-summary></dl>
+        <div class="dock-actions" data-dock-actions></div>
+      </footer>
+      </div>
+
+      <div class="page page-takes" id="page-takes" role="tabpanel" aria-labelledby="tab-takes" data-page-panel="takes" hidden>
+        <div class="page-body">
+          <div class="takes-head">
+            <div class="takes-copy">
+              <h2>Recent takes</h2>
+              <p>Files saved by this recorder, one folder per day in Simple recorder.</p>
+            </div>
+            <button type="button" class="secondary" data-open-folder>Open folder</button>
+          </div>
+          <div class="takes-grid" data-takes></div>
+        </div>
+      </div>
+
+      <div class="page page-settings" id="page-settings" role="tabpanel" aria-labelledby="tab-settings" data-page-panel="settings" hidden>
+        <div class="page-body">
+          <div class="settings-list">
+            <section class="panel panel-dev-updates" aria-labelledby="dev-updates-title">
+              <header class="panel-head">
+                <div class="panel-title">
+                  <h2 id="dev-updates-title">Developer mode updates</h2>
+                  <p class="panel-sub" data-dev-updates-summary>Updates come from public releases.</p>
+                </div>
+                <button type="button" class="switch" role="switch" aria-checked="false" aria-labelledby="dev-updates-title" data-dev-updates-switch>
+                  <span class="switch-track"><span class="switch-thumb"></span></span>
+                </button>
+              </header>
+              <p class="settings-warning">
+                Do not turn this on. It is not a public release. It installs builds from the private
+                development repo, is only for developers of Simple Recorder, and requires a GitHub
+                OAuth sign-in (<code>gh auth login</code>) with access to that repo.
+              </p>
+              <p class="panel-note" data-dev-updates-note></p>
+            </section>
+          </div>
+        </div>
+      </div>
+      </div>
+      </main>
+    </div>
+    <div id="toast" class="toast" role="status"></div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

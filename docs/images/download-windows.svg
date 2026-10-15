@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="268" height="52" viewBox="0 0 268 52" font-family="Segoe UI, system-ui, sans-serif">
+  <title>Download Simple Recorder for Windows</title>
+  <rect width="268" height="52" rx="10" fill="#026fd7"/>
+  <g fill="#ffffff">
+    <rect x="22" y="16" width="9" height="9"/>
+    <rect x="33" y="16" width="9" height="9"/>
+    <rect x="22" y="27" width="9" height="9"/>
+    <rect x="33" y="27" width="9" height="9"/>
+  </g>
+  <text x="56" y="32" font-size="17" font-weight="600" fill="#ffffff">Download for Windows</text>
+</svg>

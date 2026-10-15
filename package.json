@@ -1,0 +1,27 @@
+{
+  "name": "simple-recorder",
+  "version": "1.2.0",
+  "private": true,
+  "description": "Standalone screen recorder for Windows with a floating recorder bar",
+  "main": "electron/main.cjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Josephivgi/simple-recorder.git"
+  },
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "test": "node --test test/install.test.js test/app.test.js test/security-gate.test.js",
+    "gate": "node scripts/security-gate.cjs && npm audit --audit-level=high && npm test",
+    "promote": "node scripts/promote.cjs",
+    "release:pack": "node scripts/release.cjs --pack-only",
+    "release": "node scripts/release.cjs",
+    "app:install": "node scripts/install.cjs",
+    "app:install:json": "node scripts/install.cjs --json --quiet",
+    "app:verify": "node scripts/verify-install.cjs",
+    "app:uninstall": "node scripts/uninstall.cjs"
+  },
+  "devDependencies": {
+    "electron": "44.4.3"
+  }
+}

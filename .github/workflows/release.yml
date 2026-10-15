@@ -1,0 +1,214 @@
+name: Release
+
+# One workflow, two repos:
+# - simple-recorder-dev (private): every push to main is gated, then published
+#   as a developer build there. Only Developer mode updates read it.
+# - simple-recorder (public): a push to main only runs the gate. A release is
+#   published only for a v* tag (pushed by `npm run promote`) or a manual run,
+#   and only after every gate passes.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional version override (for example 1.2.1)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e"
+  PUBLIC_REPO: Josephivgi/simple-recorder
+  DEV_REPO: Josephivgi/simple-recorder-dev
+
+jobs:
+  gate:
+    name: Security gate
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Before npm ci, so the working-tree scan covers the repo and not node_modules.
+      - name: Secret scan (gitleaks, full history and working tree)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "gitleaks.zip"
+          Invoke-WebRequest "https://github.com/gitleaks/gitleaks/releases/download/v$env:GITLEAKS_VERSION/gitleaks_$($env:GITLEAKS_VERSION)_windows_x64.zip" -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:GITLEAKS_SHA256) { throw "gitleaks checksum mismatch: $hash" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "gitleaks")
+          $gl = Join-Path $env:RUNNER_TEMP "gitleaks\gitleaks.exe"
+          & $gl git --redact --no-banner -v .
+          if ($LASTEXITCODE -ne 0) { throw "gitleaks found secrets in git history" }
+          & $gl dir --redact --no-banner -v .
+          if ($LASTEXITCODE -ne 0) { throw "gitleaks found secrets in the working tree" }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Install dependencies (no install scripts)
+        run: npm ci --ignore-scripts
+
+      - name: Personal info, token use, and secret patterns
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REPOSITORY -eq $env:PUBLIC_REPO) {
+            node scripts/security-gate.cjs --authors
+          } else {
+            node scripts/security-gate.cjs
+          }
+          if ($LASTEXITCODE -ne 0) { throw "security gate blocked this commit" }
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+      - name: Unit tests
+        run: npm test
+
+  release:
+    name: Build and publish
+    needs: gate
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.repository == 'Josephivgi/simple-recorder-dev' && github.ref == 'refs/heads/main') ||
+      (github.repository == 'Josephivgi/simple-recorder' && startsWith(github.ref, 'refs/tags/v'))
+    # Windows runner: the setup ships the Windows Electron runtime, so it can
+    # only be packed where npm ci produces node_modules/electron/dist.
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Install dependencies (Windows Electron runtime)
+        # Electron 44 fetches its runtime through install.js, not postinstall.
+        run: |
+          npm ci --ignore-scripts
+          node node_modules/electron/install.js
+
+      # windows-2025 runners no longer ship NSIS; the setup .exe needs makensis.
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
+            choco install nsis -y --no-progress
+          }
+
+      - name: Determine release version and pack bundle
+        id: pack
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          node - <<'EOF'
+          const fs = require("fs");
+          const { execFileSync } = require("child_process");
+          const { normalizeVersion, formatTag, compareVersions } = require("./lib/updater");
+
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          let version = normalizeVersion(process.env.INPUT_VERSION || "");
+          if (!version && process.env.REF_TYPE === "tag") {
+            version = normalizeVersion(process.env.REF_NAME || "");
+          }
+          if (!version) {
+            version = normalizeVersion(pkg.version) || "1.0.0";
+          }
+
+          let existingTags = [];
+          try {
+            const raw = execFileSync(
+              "gh",
+              ["api", "repos/" + process.env.GITHUB_REPOSITORY + "/releases?per_page=100"],
+              { encoding: "utf8" },
+            );
+            const list = JSON.parse(raw);
+            if (Array.isArray(list)) {
+              existingTags = list.map((r) => normalizeVersion(r.tag_name)).filter(Boolean);
+            }
+          } catch {
+            existingTags = [];
+          }
+
+          // Dev builds: when package.json already names a published version,
+          // bump the patch past the highest release so every push produces a
+          // fresh developer build.
+          if (process.env.REF_TYPE !== "tag" && !process.env.INPUT_VERSION && existingTags.includes(version)) {
+            let highest = version;
+            for (const v of existingTags) {
+              if (compareVersions(v, highest) > 0) highest = v;
+            }
+            const parts = highest.split("-")[0].split(".").map((n) => Number(n) || 0);
+            version = `${parts[0]}.${parts[1]}.${parts[2] + 1}`;
+          }
+
+          const tag = formatTag(version);
+          execFileSync("node", ["scripts/release.cjs", "--pack-only", "--version", version], {
+            stdio: "inherit",
+          });
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=${tag}\n`);
+          EOF
+
+      - name: Gate the built bundle
+        shell: bash
+        env:
+          TAG: ${{ steps.pack.outputs.tag }}
+        run: |
+          test -f dist-app/SimpleRecorder-Setup.exe || { echo "SimpleRecorder-Setup.exe was not built"; exit 1; }
+          node scripts/security-gate.cjs --bundle "dist-app/simple-recorder-${TAG}-app.tar.gz"
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.pack.outputs.tag }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          ASSET="dist-app/simple-recorder-${TAG}-app.tar.gz"
+          MANIFEST="dist-app/latest.json"
+          # Fixed name, so releases/latest/download/SimpleRecorder-Setup.exe
+          # is a permanent link to the newest Windows build.
+          SETUP="dist-app/SimpleRecorder-Setup.exe"
+          if [ "$GITHUB_REPOSITORY" = "$DEV_REPO" ]; then
+            NOTES="Developer build from the private development repo. Not a public release."
+          else
+            NOTES="Simple Recorder ${TAG}. Passed the release security gate (gitleaks, personal info scan, npm audit, unit tests, bundle scan)."
+          fi
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" "$MANIFEST" "$SETUP" -R "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "$ASSET" "$MANIFEST" "$SETUP" \
+              -R "$GITHUB_REPOSITORY" \
+              --target "$TARGET_SHA" \
+              --title "Simple Recorder ${TAG}" \
+              --notes "$NOTES"
+          fi
