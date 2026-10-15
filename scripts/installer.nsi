@@ -27,12 +27,19 @@ RequestExecutionLevel user
 !ifndef OUTFILE
   !define OUTFILE "SimpleRecorder-Setup.exe"
 !endif
+; The setup's own icon, so the download looks like the app and not a blank
+; installer. pack-setup.cjs passes the absolute path; the fallback keeps a
+; hand-run makensis working from anywhere.
+!ifndef ICON
+  !define ICON "${__FILEDIR__}\..\assets\icon.ico"
+!endif
 
 !define APP "Simple Recorder"
 
 Name "${APP}"
 Caption "${APP} ${VERSION} setup"
 OutFile "${OUTFILE}"
+Icon "${ICON}"
 BrandingText "${APP} ${VERSION}"
 ShowInstDetails nevershow
 AutoCloseWindow true

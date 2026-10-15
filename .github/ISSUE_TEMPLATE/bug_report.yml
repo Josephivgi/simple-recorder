@@ -1,0 +1,46 @@
+name: Bug report
+description: Something in Simple Recorder doesn't work right.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Issues are public, so don't paste anything private, and only attach a screenshot or recording if it shows nothing you'd mind sharing.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, and any message the app showed.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to make it happen
+      placeholder: |
+        1. Open Studio
+        2. Pick Draw crop
+        3. ...
+    validations:
+      required: false
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Simple Recorder version
+      description: Filled in when you use Settings > Report a bug. Otherwise it's in the Updates box, bottom left.
+      placeholder: v1.2.3
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Windows version
+      placeholder: Windows 11
+    validations:
+      required: false

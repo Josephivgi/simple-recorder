@@ -544,47 +544,67 @@ crop is set) sits under it. */
   border: 1px solid var(--line);
 }
 
-.area-frame img {
-  position: relative;
-  z-index: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  display: block;
-}
-
-/* Live crop preview. The video is the screen capture, shifted so the crop
-   fills this clip. It stays on screen (not display:none) so Chromium keeps
-   presenting frames. The thumbnail sits behind it until the first frame. */
-.area-live-clip {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.area-live {
+/* Crop preview. Both layers are the whole screen, sized and shifted by the
+   page so the crop box exactly fills this frame; the frame clips the rest,
+   so what shows is the take's own frame. The live video is the intent and
+   the still screenshot stands in when the capturer will not start. The
+   still is hidden until it has been placed, so an unplaced image never
+   flashes at its natural size. */
+.area-live,
+.area-still {
   position: absolute;
   display: block;
   max-width: none;
   pointer-events: none;
+}
+
+.area-live {
   opacity: 0;
+}
+
+.area-still {
+  visibility: hidden;
+}
+
+.area-frame.has-still .area-still {
+  visibility: visible;
 }
 
 .area-frame.has-live .area-live {
   opacity: 1;
 }
 
-.area-frame.has-live img {
+.area-frame.has-live .area-still {
   visibility: hidden;
 }
 
-.area-box {
+/* The note rides the bottom of the frame: which layer is on screen, and a
+   way back to the live capture without redrawing the crop. */
+.area-note {
   position: absolute;
-  border: 2px solid var(--accent-ink);
-  box-shadow: 0 0 0 9999px oklch(0.15 0.02 255 / 0.55);
-  border-radius: 2px;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 2;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 6px 6px 12px;
+  border-radius: 999px;
+  background: oklch(0.18 0.02 255 / 0.86);
+  color: var(--on-stage);
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.area-note[hidden] {
+  display: none;
+}
+
+.area-note button {
+  flex: none;
 }
 
 .area-actions {
@@ -812,16 +832,10 @@ crop is set) sits under it. */
   max-width: 640px;
 }
 
-.settings-warning {
-  margin: 0;
-  color: var(--danger);
-  font-size: 12.5px;
-  line-height: 1.45;
-}
-
-.settings-warning code {
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-size: 12px;
+.report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 /* Recent takes */

@@ -38,6 +38,10 @@ const CAPTURE_SOURCE_TYPES = ["screen", "window"];
 const THUMBNAIL_SIZE = { width: 960, height: 540 };
 const THUMBNAIL_JPEG_QUALITY = 80;
 const TARGET_THUMB_SIZE = { width: 480, height: 270 };
+// The crop preview's still fallback: big enough that the cropped region is
+// readable when it is scaled up into the preview frame.
+const STILL_THUMB_SIZE = { width: 1280, height: 720 };
+const STILL_JPEG_QUALITY = 74;
 const WAIT_ACCESS_MAX_MS = 5 * 60 * 1000;
 const CAPTURE_STATUS_CACHE_MS = 2500;
 
@@ -651,6 +655,50 @@ function attachMediaCapture(host) {
   registerHandle("set-capture-source", (_event, payload) => {
     preferredCaptureSourceId = payload && payload.id ? String(payload.id) : "auto";
     return { ok: true };
+  });
+
+  // A single still of one screen, for the studio's crop preview when the live
+  // capturer will not start. The page clips that still to the crop box, so a
+  // person still sees the region the take records; refreshing it keeps the
+  // picture from freezing on the frame the crop was drawn over.
+  let screenStillLock = null;
+  registerHandle("capture-screen-still", async (_event, payload) => {
+    if (screenStillLock) return screenStillLock;
+    const wanted = payload && payload.sourceId ? String(payload.sourceId) : "";
+    const wantedDisplay = payload && payload.displayId ? String(payload.displayId) : "";
+    screenStillLock = captureSourcesTimeout(
+      desktopCapturer.getSources({
+        types: ["screen"],
+        thumbnailSize: STILL_THUMB_SIZE,
+        fetchWindowIcons: false,
+      }),
+    )
+      .then((sources) => {
+        const screens = (Array.isArray(sources) ? sources : [])
+          .filter(keepCaptureSource)
+          .filter((item) => String(item.id).startsWith("screen:"));
+        if (!screens.length) return { ok: false, error: "No screen to capture." };
+        const displays = screen.getAllDisplays();
+        const primaryId = String(screen.getPrimaryDisplay().id);
+        const pick =
+          (wanted && screens.find((item) => String(item.id) === wanted)) ||
+          (wantedDisplay && screens.find((item) => sourceDisplayId(item, screens, displays) === wantedDisplay)) ||
+          screens.find((item) => sourceDisplayId(item, screens, displays) === primaryId) ||
+          screens[0];
+        const thumbnail = sourceThumbData(pick.thumbnail, STILL_JPEG_QUALITY);
+        if (!thumbnail) return { ok: false, error: "The screen capture came back empty." };
+        return {
+          ok: true,
+          sourceId: String(pick.id),
+          displayId: sourceDisplayId(pick, screens, displays),
+          thumbnail,
+        };
+      })
+      .catch(() => ({ ok: false, error: "Could not capture the screen." }))
+      .finally(() => {
+        screenStillLock = null;
+      });
+    return screenStillLock;
   });
 
   // Resolve a picked window's on-screen rect into a normalized crop on the

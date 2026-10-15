@@ -12,7 +12,7 @@
 //
 // Checks: secret patterns, personal info (profile paths, home folders, personal
 // emails, private IPv4 addresses, private denylist words), shipped app code
-// reading a GitHub token outside Developer mode updates, the installer calling
+// reading a GitHub token or calling the GitHub CLI, the installer calling
 // the GitHub CLI, commit authors, and bundle paths. gitleaks, npm audit, and
 // the unit tests run next to it in the release workflow.
 
@@ -164,8 +164,7 @@ function looksBinary(buf) {
   return false;
 }
 
-// The public build reads the public repo anonymously. A token is only ever
-// read for Developer mode updates, in lib/updater.js.
+// The app reads the public repo anonymously and never reads a token.
 function scanShippedCode(dir, files, findings) {
   for (const rel of files) {
     const top = rel.split("/")[0];
@@ -179,8 +178,8 @@ function scanShippedCode(dir, files, findings) {
         findings.push({ kind: "token-use", rule: "app code reads a GitHub token from the environment", file: rel, line: i + 1, match: m[0] });
       }
     });
-    if (rel !== "lib/updater.js" && /["']auth["'],\s*["']token["']/.test(text)) {
-      findings.push({ kind: "token-use", rule: "app code asks the GitHub CLI for a token", file: rel, line: 0, match: "" });
+    if (/["']auth["'],\s*["']token["']/.test(text) || /exec(?:File)?(?:Sync)?\(\s*["']gh["']/.test(text)) {
+      findings.push({ kind: "token-use", rule: "app code calls the GitHub CLI", file: rel, line: 0, match: "" });
     }
   }
   const installer = path.join(dir, "scripts", "install.cjs");

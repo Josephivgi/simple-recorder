@@ -176,49 +176,32 @@
       <div class="page page-settings" id="page-settings" role="tabpanel" aria-labelledby="tab-settings" data-page-panel="settings" hidden>
         <div class="page-body">
           <div class="settings-list">
-            <section class="panel panel-dev-updates" aria-labelledby="dev-updates-title">
+            <section class="panel panel-default-quality" aria-labelledby="default-quality-title">
               <header class="panel-head">
                 <div class="panel-title">
-                  <h2 id="dev-updates-title">Developer mode updates</h2>
-                  <p class="panel-sub" data-dev-updates-summary>Updates come from public releases.</p>
+                  <h2 id="default-quality-title">Default quality</h2>
+                  <p class="panel-sub" data-default-quality-summary>New takes record at 1080p.</p>
                 </div>
-                <button type="button" class="switch" role="switch" aria-checked="false" aria-labelledby="dev-updates-title" data-dev-updates-switch>
-                  <span class="switch-track"><span class="switch-thumb"></span></span>
-                </button>
               </header>
-              <p class="settings-warning">
-                Do not turn this on. It is not a public release. It installs builds from the private
-                development repo, is only for developers of Simple Recorder, and requires a GitHub
-                OAuth sign-in (<code>gh auth login</code>) with access to that repo.
-              </p>
-              <p class="panel-note" data-dev-updates-note></p>
-            </section>
-            <section class="panel panel-data-safety" aria-labelledby="data-safety-title">
-              <header class="panel-head">
-                <div class="panel-title">
-                  <h2 id="data-safety-title">Your data when switching</h2>
-                  <p class="panel-sub" data-installed-channel>This copy is a public release.</p>
-                </div>
-                <button type="button" class="secondary" data-open-backups>Open backups</button>
-              </header>
-              <p class="panel-note">
-                Moving between public releases and developer builds keeps your settings, takes, and
-                recordings. Before an update installs, Simple Recorder saves a checked copy of its
-                database to the backups folder, named for the build it came from, and installs nothing
-                if that copy fails. Settings one build does not know about stay in place for the build
-                that does.
-              </p>
-              <div class="field">
-                <span class="field-label" id="backup-keep-label">Backups to keep</span>
-                <div class="seg seg-choice" role="radiogroup" aria-labelledby="backup-keep-label" data-backup-keep-group>
-                  <button type="button" role="radio" data-backup-keep="off" aria-checked="false"><strong>Off</strong></button>
-                  <button type="button" role="radio" data-backup-keep="2" aria-checked="true"><strong>2</strong></button>
-                  <button type="button" role="radio" data-backup-keep="5" aria-checked="false"><strong>5</strong></button>
-                  <button type="button" role="radio" data-backup-keep="10" aria-checked="false"><strong>10</strong></button>
-                  <button type="button" role="radio" data-backup-keep="all" aria-checked="false"><strong>All</strong></button>
-                </div>
+              <div class="seg seg-choice seg-heights" role="radiogroup" aria-labelledby="default-quality-title" data-quality-group>
+                <button type="button" role="radio" data-quality="720p" aria-checked="false"><strong>720p</strong></button>
+                <button type="button" role="radio" data-quality="1080p" aria-checked="true"><strong>1080p</strong></button>
+                <button type="button" role="radio" data-quality="1440p" aria-checked="false"><strong>1440p</strong></button>
               </div>
-              <p class="panel-note" data-backup-summary></p>
+              <p class="panel-note">Simple Recorder opens with this quality. The Quality box in the studio changes the same setting.</p>
+            </section>
+            <section class="panel panel-report" aria-labelledby="report-title">
+              <header class="panel-head">
+                <div class="panel-title">
+                  <h2 id="report-title">Report a problem</h2>
+                  <p class="panel-sub">Opens a new issue on GitHub in your browser.</p>
+                </div>
+              </header>
+              <div class="report-actions">
+                <button type="button" class="secondary" data-report="bug">Report a bug</button>
+                <button type="button" class="secondary" data-report="feature">Suggest a feature</button>
+              </div>
+              <p class="panel-note">The app version and Windows version are filled in for you. Nothing is sent until you post it on GitHub, which needs a free GitHub account.</p>
             </section>
           </div>
         </div>

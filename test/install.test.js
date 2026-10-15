@@ -232,6 +232,44 @@ test("the Windows setup is one .exe with a fixed name and a four-part file versi
   const nsi = fs.readFileSync(path.join(__dirname, "..", "scripts", "installer.nsi"), "utf8");
   assert.match(nsi, /RequestExecutionLevel user/);
   assert.match(nsi, /install\.cjs" --portable "\$1"/);
+  // The setup wears the app's icon, and a stage without it is a clear error
+  // rather than a build that fails inside makensis.
+  assert.match(nsi, /Icon "\$\{ICON\}"/);
+  assert.ok(
+    fs.existsSync(path.join(__dirname, "..", "assets", "icon.ico")),
+    "the setup has no icon to compile in",
+  );
+});
+
+test("the installer paints the app icon into the launcher it just copied", () => {
+  const installer = require("../scripts/install.cjs");
+  const { applyIcon, readIcon } = require("../lib/icon-resource.cjs");
+  const root = path.join(__dirname, "..");
+
+  // --no-icon leaves the launcher alone for a check that does not want to
+  // touch resources.
+  assert.equal(installer.parseArgs(["--no-icon"]).icon, false);
+  assert.equal(installer.parseArgs([]).icon, true);
+
+  // The shortcut and the uninstall entry both point at the icon file, and
+  // fall back to the launcher when a build ships no icon at all.
+  assert.match(installer.PS1_TEMPLATE, /SR_ICON/);
+  assert.match(installer.PS1_TEMPLATE, /\$sc\.IconLocation = \(\$icon \+ ',0'\)/);
+  assert.match(installer.PS1_TEMPLATE, /\$sc\.IconLocation = \(\$target \+ ',0'\)/);
+
+  // The .ico the installer patches with is the one in the app tree, and the
+  // app tree carries assets/.
+  assert.ok(installLayout.APP_DIRS.includes("assets"));
+  assert.equal(installLayout.appIconFile(path.join(root, "nope")), "");
+  assert.equal(readIcon(path.join(root, "assets", "icon.ico")).count, 7);
+
+  // Patching something that is not an executable, or an icon that is not
+  // there, is reported and never throws: a run that cannot paint the icon
+  // still installs the app.
+  const icon = path.join(root, "assets", "icon.ico");
+  const missing = applyIcon(path.join(root, "does-not-exist.exe"), icon);
+  assert.equal(missing.ok, false);
+  assert.match(missing.error, /no executable/);
 });
 
 test("updater keeps a dev checkout silent while installs auto-check", async () => {

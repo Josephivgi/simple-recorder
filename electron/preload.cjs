@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("rec", {
   takeShow: (id) => ipcRenderer.invoke("take-show", { id }),
   takeOpen: (id) => ipcRenderer.invoke("take-open", { id }),
   recordingsOpen: () => ipcRenderer.invoke("recordings-open"),
+  reportIssue: (kind) => ipcRenderer.invoke("issue-report-open", { kind }),
 
   // Capture consent and prefs (persisted in SQLite by main).
   captureSetupStatus: () => {
@@ -36,6 +37,7 @@ contextBridge.exposeInMainWorld("rec", {
   setCaptureIntent: (payload) => ipcRenderer.invoke("set-capture-intent", payload),
   saveRecorderPrefs: (payload) => ipcRenderer.invoke("save-recorder-prefs", payload),
   listCaptureTargets: () => ipcRenderer.invoke("list-capture-targets"),
+  screenStill: (payload) => ipcRenderer.invoke("capture-screen-still", payload || {}),
   frameWindow: (payload) => ipcRenderer.invoke("capture-window-frame", payload || {}),
   pickAreaFromPage: (payload) => ipcRenderer.invoke("page-pick-area", payload || {}),
 
@@ -102,9 +104,6 @@ contextBridge.exposeInMainWorld("rec", {
   // Download button is the one action, and the restart that follows is not.
   updateStatus: () => ipcRenderer.invoke("update-status"),
   updateInstall: (payload) => ipcRenderer.invoke("update-install", payload || {}),
-  updateSetDeveloperMode: (enabled) => ipcRenderer.invoke("update-set-developer-mode", { enabled: enabled === true }),
-  openDataBackups: () => ipcRenderer.invoke("update-open-backups"),
-  updateSetBackupKeep: (keep) => ipcRenderer.invoke("update-set-backup-keep", { keep: String(keep || "") }),
   onUpdateState: (handler) => {
     const listen = (_event, payload) => handler(payload);
     ipcRenderer.on("update-state", listen);

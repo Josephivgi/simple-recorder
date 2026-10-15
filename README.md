@@ -17,7 +17,8 @@ The button downloads `SimpleRecorder-Setup.exe`, always the newest version. Olde
 - **Start delay** (3, 5, or 10 seconds) and **auto stop** (5, 15, or 30 minutes).
 - **Stop from anywhere** with `Ctrl+Shift+Alt+S` while a take is rolling.
 - **Takes page:** every recording grouped by the day it was made, with a preview and buttons to open it, show it in its folder, or delete it.
-- **Updates in one click,** with a checked copy of your data saved first.
+- **Default quality** in Settings, so every new take starts at the height you want.
+- **Updates in one click.**
 
 ![The recorder bar](docs/images/app-bar.png)
 
@@ -47,13 +48,17 @@ Simple Recorder checks for a new version when it starts and every 15 minutes. Wh
 
 Every update is checked against the SHA-256 published with its release before anything is installed. Releases are only published after an automated security gate passes (secret scanning, dependency audit, unit tests, and a scan of the update package itself).
 
-## Your data
+Updates never touch your recordings or your settings.
 
-Before an update installs, Simple Recorder saves a checked copy of its settings database, and installs nothing if that copy fails. Your recordings are never touched by an update.
+## Settings
 
-Open **Settings** to choose how many of those copies to keep (**Off**, 2, 5, 10, or **All**; 2 by default) and to open the backups folder.
+Open **Settings** to pick the **Default quality** for new takes: 720p, 1080p (the default), or 1440p. It is the same setting as the Quality box in the studio, and it is remembered when you close the app.
 
-![Settings, with Backups to keep](docs/images/app-settings.png)
+![Settings, with Default quality](docs/images/app-settings.png)
+
+## Report a problem
+
+Open **Settings** and click **Report a bug** or **Suggest a feature**. Your browser opens a new [GitHub issue](https://github.com/Josephivgi/simple-recorder/issues) with the app version and Windows version filled in. Nothing is sent until you post it, and posting needs a free GitHub account. Please report security problems [privately](https://github.com/Josephivgi/simple-recorder/security/advisories/new) instead.
 
 ## Privacy
 
@@ -69,7 +74,7 @@ Open **Settings > Apps**, find **Simple Recorder**, and choose **Uninstall**. Yo
 | --- | --- |
 | Recordings, one folder per day | `Videos\Simple recorder` |
 | The app | `%LOCALAPPDATA%\Programs\Simple Recorder` |
-| Settings, logs, and update backups | `%APPDATA%\Simple Recorder` |
+| Settings and logs | `%APPDATA%\Simple Recorder` |
 
 ## For developers
 

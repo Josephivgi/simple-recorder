@@ -2,7 +2,8 @@ name: Release
 
 # One workflow, two repos:
 # - simple-recorder-dev (private): every push to main is gated, then published
-#   as a developer build there. Only Developer mode updates read it.
+#   as a developer build there. Installed copies never read it; promote
+#   ships the matching version to the public repo.
 # - simple-recorder (public): a push to main only runs the gate. A release is
 #   published only for a v* tag (pushed by `npm run promote`) or a manual run,
 #   and only after every gate passes.

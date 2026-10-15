@@ -47,7 +47,9 @@ const {
   makeManifest,
   readManifest,
   copyTree,
+  appIconFile,
 } = require("../lib/install-layout");
+const { applyIcon } = require("../lib/icon-resource.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 
@@ -59,6 +61,7 @@ function parseArgs(argv) {
     owner: false,
     shortcuts: true,
     registry: true,
+    icon: true,
     dryRun: false,
     json: false,
     quiet: false,
@@ -76,6 +79,7 @@ function parseArgs(argv) {
     else if (arg === "--no-owner") out.owner = false;
     else if (arg === "--no-shortcuts") out.shortcuts = false;
     else if (arg === "--no-registry") out.registry = false;
+    else if (arg === "--no-icon") out.icon = false;
     else if (arg === "--dry-run") out.dryRun = true;
     else if (arg === "--json") out.json = true;
     else if (arg === "--quiet") out.quiet = true;
@@ -139,6 +143,7 @@ const PS1_TEMPLATE = [
   "$target = $env:SR_TARGET",
   "$work = $env:SR_WORK",
   "$name = $env:SR_NAME",
+  "$icon = $env:SR_ICON",
   "$ws = New-Object -ComObject WScript.Shell",
   "$destinations = @()",
   "$programs = [Environment]::GetFolderPath('Programs')",
@@ -149,7 +154,8 @@ const PS1_TEMPLATE = [
   "  $sc = $ws.CreateShortcut($dest)",
   "  $sc.TargetPath = $target",
   "  $sc.WorkingDirectory = $work",
-  "  $sc.IconLocation = ($target + ',0')",
+  "  if ($icon -and (Test-Path -LiteralPath $icon)) { $sc.IconLocation = ($icon + ',0') }",
+  "  else { $sc.IconLocation = ($target + ',0') }",
   "  $sc.Description = $name",
   "  $sc.Save()",
   "  Write-Output $dest",
@@ -172,6 +178,7 @@ function createShortcuts(installDir) {
           SR_TARGET: exePath(installDir),
           SR_WORK: installDir,
           SR_NAME: APP_NAME,
+          SR_ICON: appIconFile(installDir),
         }),
       },
     );
@@ -186,12 +193,15 @@ function createShortcuts(installDir) {
 
 function writeRegistry(installDir, version) {
   const key = "HKCU\\" + UNINSTALL_KEY;
+  // The icon file when the app carries one, otherwise whatever icon the
+  // launcher itself has.
+  const icon = appIconFile(installDir) || exePath(installDir);
   const values = [
     ["DisplayName", "REG_SZ", APP_NAME],
     ["DisplayVersion", "REG_SZ", version],
     ["Publisher", "REG_SZ", repoOwner()],
     ["InstallLocation", "REG_SZ", installDir],
-    ["DisplayIcon", "REG_SZ", exePath(installDir) + ",0"],
+    ["DisplayIcon", "REG_SZ", icon + ",0"],
     ["UninstallString", "REG_SZ", 'cmd.exe /c ""' + uninstallCmdPath(installDir) + '""'],
     ["QuietUninstallString", "REG_SZ", 'cmd.exe /c ""' + uninstallCmdPath(installDir) + '" --quiet"'],
     ["NoModify", "REG_DWORD", "1"],
@@ -257,6 +267,7 @@ async function install(args) {
     owner: false,
     shortcuts: [],
     registryKey: "",
+    icon: null,
     files: 0,
     bytes: 0,
     dryRun: Boolean(args.dryRun),
@@ -330,6 +341,18 @@ async function install(args) {
   installedPkg.version = result.version;
   await fs.writeFile(installedPkgFile, JSON.stringify(installedPkg, null, 2) + "\n", "utf8");
 
+  // Renaming electron.exe does not rename its icon: Explorer, the taskbar,
+  // and any shortcut pointed at the exe all read the picture out of the
+  // file. Paint ours in now that assets/ is in place. A failure is reported
+  // and never fails the install: the app runs fine with the wrong picture.
+  if (args.icon !== false) {
+    const iconFile = appIconFile(installDir);
+    if (iconFile) {
+      result.icon = applyIcon(exePath(installDir), iconFile);
+      if (!result.icon.ok) log(args, "The app icon could not be written: " + result.icon.error);
+    }
+  }
+
   const manifest = makeManifest({
     version: result.version,
     installDir,
@@ -384,6 +407,15 @@ async function main() {
       "  developer: " + (result.owner ? "yes" : "no") + "\n",
     );
     process.stdout.write("  files:     " + result.files + " (" + result.bytes + " bytes)\n");
+    if (args.icon === false) {
+      process.stdout.write("  icon:      left alone\n");
+    } else if (result.icon) {
+      process.stdout.write(
+        "  icon:      " +
+          (result.icon.ok ? "written (" + result.icon.images + " sizes)" : "not written (" + result.icon.error + ")") +
+          "\n",
+      );
+    }
     for (const shortcut of result.shortcuts) process.stdout.write("  shortcut:  " + shortcut + "\n");
     if (result.registryKey) process.stdout.write("  uninstall: " + result.registryKey + "\n");
   }

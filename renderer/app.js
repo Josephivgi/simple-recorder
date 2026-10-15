@@ -1,6 +1,6 @@
 // Simple Recorder pages + take engine.
 // Three pages: Studio (source, mic, frame rate, delay, and the bottom dock),
-// Takes (saved files), and Settings (Developer mode updates). The floating
+// Takes (saved files), and Settings (Default quality). The floating
 // bar owns record, pause, stop, and close. Studio owns the capture itself
 // (getDisplayMedia + MediaRecorder). Chunks stream to disk through
 // take-write IPC so a crash cannot lose a recording.
@@ -222,17 +222,21 @@ const session = {
   previewStream: null,
   previewVideo: null,
   previewObserver: null,
+  previewFrame: null,
   previewSourceId: "",
   previewStarting: false,
   previewGeneration: 0,
   previewRateLocked: false,
+  previewLive: false,
+  previewFailed: false,
+  previewStillOk: false,
+  previewStillBusy: false,
+  previewStillTimer: 0,
   micDevices: [],
   micLabelsHidden: false,
   meter: null,
   update: {
     repo: "Josephivgi/simple-recorder",
-    developerMode: false,
-    channel: "public",
     bootVersion: "1.0.0",
     currentVersion: "1.0.0",
     currentTag: "v1.0.0",
@@ -1163,14 +1167,19 @@ function recordingInput() {
 }
 
 // ---------------------------------------------------------------------------
-// Live crop preview: a 30 fps look at exactly what a cropped take records.
-// The video element is the preview. It stays in the frame (a detached or
-// canvas-polled video only presents the first frame), shifted so the crop
-// is what you see. The capture is locked to 30 fps. The static thumbnail
-// sits underneath until the first frame, so a denied capture stays a picture.
+// Crop preview: the frame always shows the rectangle a take records.
+//
+// Two layers can carry it. The live screen capture is the intent: a 30 fps
+// look at the crop. When the capturer will not start (a wedged OS capture
+// stack, a denied permission) the frame keeps the crop with a still
+// screenshot of the same screen, refreshed on a slow timer, plus a note and
+// a Retry. Both layers are placed by the same math, so the preview never
+// turns into the whole uncropped desktop, a frozen frame, or an empty box
+// that reads as the app being broken.
 // ---------------------------------------------------------------------------
 
 const PREVIEW_FPS = 30;
+const STILL_REFRESH_MS = 1200;
 
 function previewScreenSourceId() {
   const picked = recordSourcePick();
@@ -1259,50 +1268,180 @@ function setPreviewBox(video, left, top, width, height) {
   if (video.style.height !== next.height) video.style.height = next.height;
 }
 
-// Scale the screen so the crop matches the frame (contain), then shift the
-// video. overflow on the clip hides everything outside the crop.
-function placeCropPreviewVideo(video) {
-  if (!video || !video.isConnected) return;
-  const frame = video.closest(".area-frame");
-  if (!frame) return;
-  const rectW = frame.clientWidth;
-  const rectH = frame.clientHeight;
-  const srcW = video.videoWidth;
-  const srcH = video.videoHeight;
-  if (rectW < 2 || rectH < 2 || srcW < 2 || srcH < 2) return;
-  const crop = clampCrop(session.areaCrop || { x: 0, y: 0, w: 1, h: 1 });
+// Contain the source in the frame so the crop box exactly fills it, then
+// shift it. The frame clips the overflow, so only the crop shows.
+function cropPlacement(rectW, rectH, srcW, srcH, crop) {
   const scale = Math.min(rectW / (srcW * crop.w), rectH / (srcH * crop.h));
-  const videoW = srcW * scale;
-  const videoH = srcH * scale;
-  video.style.objectFit = "fill";
-  setPreviewBox(
-    video,
-    (rectW - crop.w * videoW) / 2 - crop.x * videoW,
-    (rectH - crop.h * videoH) / 2 - crop.y * videoH,
-    videoW,
-    videoH,
-  );
-  frame.classList.add("has-live");
-  if (!session.previewRateLocked && session.previewStream) {
-    session.previewRateLocked = true;
-    const track = session.previewStream.getVideoTracks()[0];
-    // Wait until the crop is actually on screen, then pin the capturer.
-    // A hidden element negotiates a slow rate and keeps it.
-    requestAnimationFrame(() => {
-      void lockPreviewFrameRate(track);
-    });
-  }
+  const width = srcW * scale;
+  const height = srcH * scale;
+  return {
+    left: (rectW - crop.w * width) / 2 - crop.x * width,
+    top: (rectH - crop.h * height) / 2 - crop.y * height,
+    width,
+    height,
+  };
 }
 
-function watchPreviewFrame(video) {
-  const frame = video && video.closest(".area-frame");
+// One frame, both layers: whichever of them holds a real picture is placed
+// for the current crop, and the CSS decides which one is on screen. The CSS
+// classes follow the pixels (a layer is marked only once it has a frame), so
+// a slow or refused capture can never leave an empty box behind.
+function placeAreaFrame(frame) {
+  if (!frame || !frame.isConnected) return;
+  const rectW = frame.clientWidth;
+  const rectH = frame.clientHeight;
+  if (rectW < 2 || rectH < 2) return;
+  const crop = clampCrop(session.areaCrop || { x: 0, y: 0, w: 1, h: 1 });
+  const place = (el, srcW, srcH) => {
+    if (!el || !(srcW >= 2) || !(srcH >= 2)) return;
+    const box = cropPlacement(rectW, rectH, srcW, srcH, crop);
+    el.style.objectFit = "fill";
+    setPreviewBox(el, box.left, box.top, box.width, box.height);
+  };
+  const live = frame.querySelector("[data-area-live]");
+  if (live && live.videoWidth >= 2 && live.videoHeight >= 2) {
+    place(live, live.videoWidth, live.videoHeight);
+    frame.classList.add("has-live");
+    session.previewLive = true;
+    if (!session.previewRateLocked && session.previewStream) {
+      session.previewRateLocked = true;
+      const track = session.previewStream.getVideoTracks()[0];
+      // Wait until the crop is actually on screen, then pin the capturer.
+      // A hidden element negotiates a slow rate and keeps it.
+      requestAnimationFrame(() => {
+        void lockPreviewFrameRate(track);
+      });
+    }
+  }
+  const still = frame.querySelector("[data-area-still]");
+  if (still && still.naturalWidth >= 2) {
+    place(still, still.naturalWidth, still.naturalHeight);
+    frame.classList.add("has-still");
+    session.previewStillOk = true;
+  }
+  paintPreviewState();
+}
+
+function watchPreviewFrame(frame) {
+  if (!frame) return;
+  if (session.previewObserver && session.previewFrame === frame) return;
   if (session.previewObserver) {
     session.previewObserver.disconnect();
     session.previewObserver = null;
   }
-  if (!frame || typeof ResizeObserver !== "function") return;
-  session.previewObserver = new ResizeObserver(() => placeCropPreviewVideo(video));
+  if (typeof ResizeObserver !== "function") return;
+  session.previewFrame = frame;
+  session.previewObserver = new ResizeObserver(() => placeAreaFrame(frame));
   session.previewObserver.observe(frame);
+}
+
+// The still layer is an <img>, so it has to be placed again every time a new
+// screenshot lands (its natural size is only known once it decodes).
+function watchStillImage(img) {
+  if (!img) return;
+  const frame = img.closest(".area-frame");
+  if (!frame) return;
+  const place = () => placeAreaFrame(frame);
+  if (img.complete) place();
+  else img.onload = place;
+}
+
+// The note over the preview only appears once a live attempt has actually
+// failed, so a preview that is still connecting never looks broken.
+function paintPreviewState() {
+  const note = document.querySelector("[data-area-note]");
+  if (!note) return;
+  const failed = session.previewFailed && !session.previewLive;
+  note.hidden = !failed;
+  if (!failed) return;
+  const text = note.querySelector("[data-area-note-text]");
+  if (text) {
+    text.textContent = session.previewStillOk
+      ? "Live preview unavailable · showing a still image"
+      : "Live preview unavailable";
+  }
+}
+
+function stopStillRefresh() {
+  if (session.previewStillTimer) {
+    clearTimeout(session.previewStillTimer);
+    session.previewStillTimer = 0;
+  }
+}
+
+function scheduleStillRefresh() {
+  if (session.previewStillTimer) return;
+  session.previewStillTimer = setTimeout(() => {
+    session.previewStillTimer = 0;
+    void refreshPreviewStill();
+  }, STILL_REFRESH_MS);
+}
+
+// Swap in a screenshot only once it has decoded, so a failed capture leaves
+// the previous picture alone instead of a broken image in the frame. A frame
+// that started with no thumbnail at all gets its image here.
+function applyPreviewStill(url) {
+  if (!url) return;
+  const probe = new Image();
+  probe.onload = () => {
+    if (session.previewLive) return;
+    const frame = document.querySelector(".area-frame");
+    if (!frame) return;
+    let img = frame.querySelector("[data-area-still]");
+    if (!img) {
+      img = document.createElement("img");
+      img.className = "area-still";
+      img.setAttribute("data-area-still", "");
+      img.alt = "";
+      frame.insertBefore(img, frame.firstChild);
+    }
+    img.src = url;
+    session.previewStillOk = true;
+    placeAreaFrame(frame);
+  };
+  probe.src = url;
+}
+
+// A fresh still of the same screen, so the preview is not the picture the
+// crop was drawn over. It keeps the timer alive while the live capturer is
+// still refusing to start.
+async function refreshPreviewStill() {
+  if (session.previewLive || session.previewStarting || session.phase !== "idle") return;
+  if (document.hidden || session.previewStillBusy) return;
+  if (!api || typeof api.screenStill !== "function") return;
+  session.previewStillBusy = true;
+  let result = null;
+  try {
+    result = await api.screenStill({
+      sourceId: previewScreenSourceId(),
+      displayId: session.areaDisplayId || "",
+    });
+  } catch {
+    result = null;
+  }
+  session.previewStillBusy = false;
+  if (session.previewLive || session.phase !== "idle") return;
+  if (result && result.ok && result.thumbnail) applyPreviewStill(result.thumbnail);
+  if (session.previewFailed && !session.previewLive) scheduleStillRefresh();
+}
+
+// The live capturer refused: show the crop with stills and say so, with a
+// way to try the live capture again without redrawing the crop.
+function useStillPreview() {
+  if (session.previewLive) return;
+  session.previewFailed = true;
+  const frame = document.querySelector(".area-frame");
+  if (frame) frame.classList.remove("has-live");
+  paintPreviewState();
+  void refreshPreviewStill();
+  scheduleStillRefresh();
+}
+
+function retryCropPreview() {
+  stopStillRefresh();
+  session.previewFailed = false;
+  paintPreviewState();
+  void startCropPreview();
 }
 
 function attachPreviewVideo(video, stream) {
@@ -1312,16 +1451,14 @@ function attachPreviewVideo(video, stream) {
   video.disablePictureInPicture = true;
   if (video.srcObject !== stream) video.srcObject = stream;
   session.previewVideo = video;
-  watchPreviewFrame(video);
   const frame = video.closest(".area-frame");
-  if (frame && video.videoWidth < 2 && frame.clientWidth >= 2 && frame.clientHeight >= 2) {
-    setPreviewBox(video, 0, 0, frame.clientWidth, frame.clientHeight);
-  }
-  const place = () => placeCropPreviewVideo(video);
+  watchPreviewFrame(frame);
+  if (frame) placeAreaFrame(frame);
+  const place = () => placeAreaFrame(frame);
   video.onloadedmetadata = place;
   video.onresize = place;
   if (typeof video.requestVideoFrameCallback === "function") {
-    video.requestVideoFrameCallback(() => placeCropPreviewVideo(video));
+    video.requestVideoFrameCallback(place);
   }
   return Promise.resolve(video.play()).then(place);
 }
@@ -1332,6 +1469,11 @@ function stopCropPreview() {
     session.previewObserver.disconnect();
     session.previewObserver = null;
   }
+  session.previewFrame = null;
+  stopStillRefresh();
+  // Only the live layer goes: a still that is already placed stays on
+  // screen, so the crop keeps showing while the bar is open or a new
+  // capture is being negotiated.
   const frame = document.querySelector(".area-frame");
   if (frame) frame.classList.remove("has-live");
   const video = session.previewVideo;
@@ -1348,6 +1490,10 @@ function stopCropPreview() {
   session.previewVideo = null;
   session.previewRateLocked = false;
   session.previewSourceId = "";
+  session.previewLive = false;
+  session.previewFailed = false;
+  session.previewStillOk = false;
+  session.previewStillBusy = false;
   if (session.previewStream) {
     stopStream(session.previewStream);
     session.previewStream = null;
@@ -1366,6 +1512,7 @@ async function startCropPreview() {
       // display's stream just because the video element was repainted.
       stopCropPreview();
     } else {
+      session.previewFailed = false;
       try {
         await attachPreviewVideo(video, session.previewStream);
       } catch {
@@ -1403,21 +1550,29 @@ async function startCropPreview() {
       track.addEventListener(
         "ended",
         () => {
-          if (session.previewStream === stream) stopCropPreview();
+          // The capture was taken away: keep the crop on screen as a still
+          // rather than dropping the preview to nothing.
+          if (session.previewStream === stream) {
+            stopCropPreview();
+            useStillPreview();
+          }
         },
         { once: true },
       );
     }
     if (generation !== session.previewGeneration || session.previewStream !== stream) return;
+    session.previewFailed = false;
     await attachPreviewVideo(live, stream);
   } catch (error) {
-    // Denied or unable to play: keep the (refreshed) thumbnail as a fallback.
+    // Denied or unable to start: the frame keeps showing the crop from
+    // still screenshots, with a note and a Retry.
     logRecorderEvent(
       "crop preview failed",
       ((error && error.name) || "Error") + ": " + ((error && error.message) || ""),
     );
     if (stream && session.previewStream === stream) stopCropPreview();
     else if (stream) stopStream(stream);
+    useStillPreview();
   } finally {
     if (generation === session.previewGeneration) session.previewStarting = false;
   }
@@ -2043,13 +2198,12 @@ const studio = {
   sourceKey: "",
   targetsAt: 0,
   page: "studio",
-  devModeBusy: false,
 };
 
 const PAGE_BLURB = {
   studio: "Set up the take, then start the recorder bar.",
   takes: "Recordings saved on this computer.",
-  settings: "How this copy of Simple Recorder gets its updates.",
+  settings: "Defaults for new takes.",
 };
 
 function showPage(name) {
@@ -2289,19 +2443,25 @@ function onMicDevice(id) {
   render();
 }
 
-// The crop preview: shown only while a crop is set. The screen thumbnail
-// carries the region box; several screens also pick which one to draw on.
+// The crop preview: shown only while a crop is set. Both layers are clipped
+// to the crop box, so the frame shows the take's own frame either way.
 function areaMarkup() {
   const screens = session.targets.screens;
   const screen = screenForDisplay(session.areaDisplayId) || screens.find((item) => item.primary) || screens[0] || null;
   const screenPicker = screens.length > 1 ? '<div class="picker" data-area-screen-picker></div>' : "";
-  // The live video shows the cropped feed at 30 fps; the thumbnail sits
-  // underneath until the first frame lands (or forever if capture fails).
-  const live =
-    '<div class="area-live-clip" data-area-live-clip><video class="area-live" data-area-live muted playsinline autoplay aria-hidden="true"></video></div>';
+  const still =
+    screen && screen.thumbnail
+      ? '<img class="area-still" data-area-still alt="" src="' + esc(screen.thumbnail) + '" />'
+      : "";
+  const live = '<video class="area-live" data-area-live muted playsinline autoplay aria-hidden="true"></video>';
+  const note =
+    '<p class="area-note" data-area-note hidden>' +
+    '<span data-area-note-text>Live preview unavailable</span>' +
+    '<button type="button" class="secondary small" data-area-retry>Retry</button>' +
+    "</p>";
   return (
     '<div class="area-view">' +
-    '<div class="area-frame">' + (screen && screen.thumbnail ? '<img alt="" src="' + esc(screen.thumbnail) + '" />' : "") + live + "</div>" +
+    '<div class="area-frame">' + still + live + note + "</div>" +
     '<div class="area-actions">' + screenPicker +
     '<button type="button" class="secondary" data-draw-area' + (session.areaPicking ? " disabled" : "") + ">Draw again</button></div>" +
     "</div>"
@@ -2361,14 +2521,13 @@ function paintSource() {
   pickers.forEach((picker) => {
     if (!picker.root.isConnected) pickers.delete(picker);
   });
-  // The page CSP forbids inline style attributes; place the box via CSSOM.
-  const preview = body.querySelector("[data-area-preview]");
-  if (preview && session.areaCrop) {
-    const crop = session.areaCrop;
-    preview.style.left = crop.x * 100 + "%";
-    preview.style.top = crop.y * 100 + "%";
-    preview.style.width = crop.w * 100 + "%";
-    preview.style.height = crop.h * 100 + "%";
+  // The preview frame: the still is placed the moment it decodes, and the
+  // live layer takes the frame over as soon as it presents a picture.
+  const frame = body.querySelector(".area-frame");
+  if (frame && session.areaCrop) {
+    watchPreviewFrame(frame);
+    watchStillImage(frame.querySelector("[data-area-still]"));
+    placeAreaFrame(frame);
   }
   studio.areaPicker = null;
   // The live crop preview rides the idle page only: the bar's own capture
@@ -2470,12 +2629,9 @@ function paintChoices() {
     btn.setAttribute("aria-checked", String(btn.getAttribute("data-quality") === quality));
   });
   const qualityNote = document.querySelector("[data-quality-summary]");
-  if (qualityNote) {
-    qualityNote.textContent =
-      quality === DEFAULT_QUALITY
-        ? "Records at 1080p."
-        : "Records at " + quality + ".";
-  }
+  if (qualityNote) qualityNote.textContent = "Records at " + quality + ".";
+  const defaultNote = document.querySelector("[data-default-quality-summary]");
+  if (defaultNote) defaultNote.textContent = "New takes record at " + quality + ".";
   const autoStop = clampAutoStopMs(session.autoStopMs);
   document.querySelectorAll("[data-autostop]").forEach((btn) => {
     btn.setAttribute("aria-checked", String(Number(btn.getAttribute("data-autostop")) === autoStop));
@@ -2576,7 +2732,6 @@ function paintUpdates() {
     if (u.status === "downloading") summary.textContent = "New update detected";
     else if (u.status === "installing") summary.textContent = "New update detected";
     else if (u.needsRestart) summary.textContent = "Restarting";
-    else if (u.switchAvailable && u.latestTag) summary.textContent = u.channel === "developer" ? "Developer build ready" : "Public release ready";
     else if (u.updateAvailable && u.latestTag) summary.textContent = "New update detected";
     else if (u.status === "checking") summary.textContent = "Checking for updates";
     else if (u.status === "error") summary.textContent = "Could not check · " + currentTag;
@@ -2599,109 +2754,12 @@ function paintUpdates() {
       u.error ||
       (u.needsRestart
         ? "Restarting to finish the update."
-        : u.switchAvailable && u.latestTag
-          ? "Installing " + u.latestTag + " moves this copy to " + channelLabel(u.channel) + "s. Your data stays, and a copy is saved first."
         : u.updateAvailable && u.latestTag
           ? u.latestTag + " is ready to download."
-          : u.developerMode
-            ? "Developer mode updates are on: builds come from the private development repo."
-            : u.installMode === "development"
-              ? "Dev build: GitHub Releases never rewrite this checkout."
-              : "Updates come from GitHub Releases.");
+          : u.installMode === "development"
+            ? "Dev build: GitHub Releases never rewrite this checkout."
+            : "Updates come from GitHub Releases.");
   }
-  paintDeveloperUpdates();
-}
-
-function paintDeveloperUpdates() {
-  const u = session.update || {};
-  const on = Boolean(u.developerMode);
-  const busyUpdate = u.status === "downloading" || u.status === "installing";
-  const toggle = document.querySelector("[data-dev-updates-switch]");
-  if (toggle) {
-    toggle.setAttribute("aria-checked", String(on));
-    toggle.disabled = busyUpdate || studio.devModeBusy;
-  }
-  const summary = document.querySelector("[data-dev-updates-summary]");
-  if (summary) {
-    summary.textContent = on
-      ? "Updates come from the private development repo."
-      : "Updates come from public releases.";
-  }
-  const note = document.querySelector("[data-dev-updates-note]");
-  if (note) note.textContent = on && u.error ? u.error : "";
-  const installed = document.querySelector("[data-installed-channel]");
-  if (installed) {
-    installed.textContent =
-      u.installMode === "development"
-        ? "This copy is a source checkout."
-        : u.installedChannel === "developer"
-          ? "This copy is a developer build."
-          : "This copy is a public release.";
-  }
-  paintBackups(u);
-}
-
-function paintBackups(u) {
-  const keep = u.backupKeep || "2";
-  document.querySelectorAll("[data-backup-keep]").forEach((btn) => {
-    btn.setAttribute("aria-checked", String(btn.getAttribute("data-backup-keep") === keep));
-    btn.disabled = u.status === "downloading" || u.status === "installing";
-  });
-  const note = document.querySelector("[data-backup-summary]");
-  if (!note) return;
-  const count = Number(u.backupCount) || 0;
-  const held = count === 1 ? "1 backup" : count + " backups";
-  const size = formatBytes(u.backupBytes) || "0 KB";
-  note.textContent =
-    keep === "off"
-      ? "Backups are off: updates install without a copy of your data. The folder holds " + held + " (" + size + ")."
-      : keep === "all"
-        ? "Every backup is kept. The folder holds " + held + " (" + size + ")."
-        : "The newest " + keep + " are kept and older ones are removed. The folder holds " + held + " (" + size + ").";
-}
-
-async function onBackupKeep(event) {
-  const btn = event.target.closest("[data-backup-keep]");
-  if (!btn || btn.disabled || !api || typeof api.updateSetBackupKeep !== "function") return;
-  try {
-    const state = await api.updateSetBackupKeep(btn.getAttribute("data-backup-keep"));
-    if (state) {
-      session.update = state;
-      paintUpdates();
-    }
-  } catch {
-    toast("Could not change the backup setting.", true);
-  }
-}
-
-function channelLabel(channel) {
-  return channel === "developer" ? "developer build" : "public release";
-}
-
-async function onOpenBackups() {
-  if (!api || typeof api.openDataBackups !== "function") return;
-  try {
-    const res = await api.openDataBackups();
-    if (res && !res.ok) toast("Could not open the backups folder.", true);
-  } catch {
-    toast("Could not open the backups folder.", true);
-  }
-}
-
-async function onDeveloperUpdatesSwitch() {
-  if (!api || typeof api.updateSetDeveloperMode !== "function" || studio.devModeBusy) return;
-  const next = !(session.update && session.update.developerMode);
-  studio.devModeBusy = true;
-  paintDeveloperUpdates();
-  try {
-    const state = await api.updateSetDeveloperMode(next);
-    if (state) session.update = state;
-  } catch {
-    toast("Could not change Developer mode updates.", true);
-  } finally {
-    studio.devModeBusy = false;
-  }
-  paintUpdates();
 }
 
 async function onUpdateDownload() {
@@ -2736,9 +2794,6 @@ function wireStudio() {
     studio.micPicker = createPicker(micHolder, { labelledBy: "mic-input-label", onChange: onMicDevice });
   }
   document.querySelector("[data-update-download]")?.addEventListener("click", () => void onUpdateDownload());
-  document.querySelector("[data-dev-updates-switch]")?.addEventListener("click", () => void onDeveloperUpdatesSwitch());
-  document.querySelector("[data-open-backups]")?.addEventListener("click", () => void onOpenBackups());
-  document.querySelector("[data-backup-keep-group]")?.addEventListener("click", (event) => void onBackupKeep(event));
   if (api && typeof api.onUpdateState === "function") {
     api.onUpdateState((state) => {
       if (!state) return;
@@ -2759,6 +2814,7 @@ function wireStudio() {
   document.querySelector("[data-source-body]")?.addEventListener("click", (event) => {
     const el = event.target;
     if (el.closest(".picker")) return;
+    if (el.closest("[data-area-retry]")) return retryCropPreview();
     if (el.closest("[data-draw-area]")) void drawArea(studio.areaPicker ? areaScreenPick : "");
   });
   document.querySelector("[data-mic-switch]")?.addEventListener("click", () => void onMicSwitch());
@@ -2785,13 +2841,14 @@ function wireStudio() {
   });
   // The File format box has one live option, so there is nothing to wire:
   // the disabled WebM placeholder cannot fire a click.
-  document.querySelector("[data-quality-group]")?.addEventListener("click", (event) => {
+  // The studio's Quality box and Settings > Default quality are one setting.
+  document.querySelectorAll("[data-quality-group]").forEach((group) => group.addEventListener("click", (event) => {
     const btn = event.target.closest("[data-quality]");
     if (!btn || btn.disabled || isBusy()) return;
     session.quality = clampQuality(btn.getAttribute("data-quality"));
     rememberPrefs({ recordQuality: session.quality });
     render();
-  });
+  }));
   document.querySelector("[data-autostop-group]")?.addEventListener("click", (event) => {
     const btn = event.target.closest("[data-autostop]");
     if (!btn || isBusy()) return;
@@ -3050,6 +3107,13 @@ async function boot() {
   document.querySelector("[data-open-folder]")?.addEventListener("click", () => {
     void api.recordingsOpen().catch(() => {});
   });
+  for (const btn of document.querySelectorAll("[data-report]")) {
+    btn.addEventListener("click", async () => {
+      const res = await api.reportIssue(btn.dataset.report).catch(() => null);
+      if (res && res.ok) toast("Opened GitHub in your browser.");
+      else toast("Could not open the browser. Go to github.com/Josephivgi/simple-recorder/issues.", true);
+    });
+  }
   try {
     const [status, updateState] = await Promise.all([
       api.captureSetupStatus(),
@@ -3068,6 +3132,85 @@ async function boot() {
   // Main builds the overlay windows hidden after launch; cover the case
   // where they were torn down since.
   if (api && typeof api.prewarmRecorderBar === "function") api.prewarmRecorderBar();
+}
+
+// ---------------------------------------------------------------------------
+// Smoke probe: the crop preview, driven for real.
+//
+// main.cjs boots the app hidden and asks for this hook (the page is loaded
+// with ?smoke=1), then prints what it returns with the rest of the smoke JSON.
+// It sets a crop, takes the failed-live path, pulls one still through the
+// app's own IPC, and reports what the frame ended up showing. A crop-true
+// frame renders the crop region as large as the frame allows without cutting
+// it, and touches at least one pair of frame edges: pillarboxing or
+// letterboxing is honest (the frame is a different shape than the crop), but
+// the whole desktop squeezed into the frame is not, and that is the bug this
+// probe exists to catch.
+// ---------------------------------------------------------------------------
+
+async function smokePreviewProbe() {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // The probe runs after boot, but never race it: the crop needs a display.
+  for (let i = 0; i < 30 && !session.setupLoaded; i += 1) await wait(100);
+  const crop = { x: 0.25, y: 0.25, w: 0.5, h: 0.5 };
+  const screens = (session.targets && session.targets.screens) || [];
+  const screen = screens[0] || null;
+  session.target = "area";
+  session.areaCrop = crop;
+  session.crop = crop;
+  session.areaDisplayId = (screen && screen.displayId) || session.displayId || "";
+  paintSource();
+  await wait(60);
+  // The capturer refusing to start is the whole reason the fallback exists.
+  useStillPreview();
+  let stillError = "";
+  try {
+    const shot = await api.screenStill({
+      sourceId: previewScreenSourceId(),
+      displayId: session.areaDisplayId,
+    });
+    if (shot && shot.ok && shot.thumbnail) applyPreviewStill(shot.thumbnail);
+    else stillError = (shot && shot.error) || "no thumbnail";
+  } catch (error) {
+    stillError = String((error && error.message) || error);
+  }
+  await wait(1500);
+  const frame = document.querySelector(".area-frame");
+  if (!frame) return { error: "no preview frame" };
+  const rect = frame.getBoundingClientRect();
+  const still = frame.querySelector("[data-area-still]");
+  const note = document.querySelector("[data-area-note]");
+  const box = still ? still.getBoundingClientRect() : null;
+  const out = {
+    frame: Math.round(rect.width) + "x" + Math.round(rect.height),
+    live: frame.classList.contains("has-live"),
+    stillShown: frame.classList.contains("has-still"),
+    stillNatural: still ? still.naturalWidth + "x" + still.naturalHeight : "",
+    stillError,
+    note: note && !note.hidden ? note.textContent.trim() : "",
+    retry: Boolean(document.querySelector("[data-area-retry]")),
+    cropTrue: null,
+  };
+  if (box && box.width > 1 && box.height > 1) {
+    // The crop region as rendered, which is what the take would record. It
+    // should be as large as the frame allows and never cut: the bigger of its
+    // two fill ratios has to reach the edge, within a pixel of layout slack.
+    const cropW = box.width * crop.w;
+    const cropH = box.height * crop.h;
+    const fill = Math.max(cropW / rect.width, cropH / rect.height);
+    out.cropTrue = fill > 0.98 && cropW <= rect.width + 1 && cropH <= rect.height + 1;
+    out.box = Math.round(box.width) + "x" + Math.round(box.height);
+    out.cropShown =
+      Math.round(cropW) + "x" + Math.round(cropH) +
+      " at " + Math.round(box.left + (box.width - cropW) / 2 - rect.left) +
+      "," + Math.round(box.top + (box.height - cropH) / 2 - rect.top) +
+      " fill " + Math.round(fill * 100) + "%";
+  }
+  return out;
+}
+
+if (new URLSearchParams(location.search).has("smoke")) {
+  window.__recPreviewProbe = smokePreviewProbe;
 }
 
 void boot();

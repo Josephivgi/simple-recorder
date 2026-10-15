@@ -71,17 +71,19 @@ test("the gate blocks secrets, personal info, and denylist words", () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("the gate blocks app code that reads a GitHub token outside Developer mode updates", () => {
+test("the gate blocks app code that reads a GitHub token or calls the GitHub CLI", () => {
   const dir = tempTree({
     "lib/other.js": "const t = process.env." + "GITHUB_TOKEN;\n",
     "lib/bracket.js": "const t = process.env[\"" + "GH_" + "TOKEN\"];\n",
     "electron/x.cjs": "execFile('gh', ['auth', " + "'token'])\n",
+    "lib/updater.js": "execFile(" + "'gh', ['api', 'user'])\n",
     "scripts/install.cjs": "execFileSync(" + "\"gh\", ['api', 'user'])\n",
   });
   const result = gate.runGate({ dir });
   assert.ok(result.findings.some((f) => f.file === "lib/bracket.js"));
+  assert.ok(result.findings.some((f) => f.file === "lib/updater.js"), "the updater has no exception any more");
   assert.deepEqual(rules(result), [
-    "app code asks the GitHub CLI for a token",
+    "app code calls the GitHub CLI",
     "app code reads a GitHub token from the environment",
     "installer calls the GitHub CLI",
   ]);

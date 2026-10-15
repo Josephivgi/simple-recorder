@@ -1,0 +1,24 @@
+name: Feature idea
+description: Something you'd like Simple Recorder to do.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What would you use it for?
+      description: The recording you're trying to make helps us get it right.
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Simple Recorder version
+      placeholder: v1.2.3
+    validations:
+      required: false

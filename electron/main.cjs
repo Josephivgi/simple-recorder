@@ -27,6 +27,7 @@ const {
 } = require("../lib/library-folders");
 const { trackWindow, registerOn, shutdownRegistry } = require("../lib/main-ipc-registry.cjs");
 const { frameLooksBlank } = require("../lib/paint-check");
+const { issueUrl, osLabel } = require("../lib/issue-report");
 
 const disposers = [];
 
@@ -1652,6 +1653,14 @@ function startCountdownOverlay(event, payload) {
   }, 250);
 }
 
+// The shipped app icon (assets/icon.ico on Windows, assets/icon.png
+// elsewhere). It is what the window, taskbar, and shortcuts show; a source
+// checkout that predates the assets folder simply has no icon to set.
+function appIconFile() {
+  const file = path.join(__dirname, "..", "assets", process.platform === "win32" ? "icon.ico" : "icon.png");
+  return fssync.existsSync(file) ? file : "";
+}
+
 const MAIN_PAINT_CHECK_MS = 3000;
 
 // The frame the window is showing, judged blank or painted. A capture that
@@ -1683,6 +1692,7 @@ function createWindow() {
   const work = displayWorkArea();
   const width = Math.min(1180, work.width);
   const height = Math.min(820, work.height);
+  const icon = appIconFile();
   const win = new BrowserWindow({
     width,
     height,
@@ -1693,6 +1703,7 @@ function createWindow() {
     backgroundColor: "#f4f6f8",
     title: "Simple Recorder",
     show: false,
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -1718,7 +1729,10 @@ function createWindow() {
   let rendererReloadTries = 0;
   const loadApp = () => {
     if (win.isDestroyed()) return;
-    win.loadFile(indexFile).catch((error) => logCrash("loadApp loadFile", (error && (error.stack || error.message)) || error));
+    // ?smoke=1 only in a smoke run: it is what installs the page's
+    // crop-preview probe, and a normal launch carries no debug hook.
+    const opts = SMOKE ? { query: { smoke: "1" } } : undefined;
+    win.loadFile(indexFile, opts).catch((error) => logCrash("loadApp loadFile", (error && (error.stack || error.message)) || error));
   };
   win.webContents.on("render-process-gone", (_event, details) => {
     if (!details || details.reason === "clean-exit") return;
@@ -1828,8 +1842,8 @@ async function runSmoke(win) {
             " takeCards: document.querySelectorAll('.take-card').length," +
             " updateDownload: Boolean(document.querySelector('[data-update-download]'))," +
             " updateSummary: Boolean(document.querySelector('[data-update-summary]'))," +
-            " backupsButton: Boolean(document.querySelector('[data-open-backups]'))," +
-            " devModeSwitch: (document.querySelector('[data-dev-updates-switch]') || {}).getAttribute ? document.querySelector('[data-dev-updates-switch]').getAttribute('aria-checked') : null," +
+            " defaultQuality: (document.querySelector('[data-page-panel=\"settings\"] [data-quality][aria-checked=\"true\"]') || {}).textContent || ''," +
+            " reportButtons: document.querySelectorAll('[data-report]').length," +
             " dock: (document.querySelector('[data-dock-summary]') || {}).textContent || '' }))",
         )
         .catch((error) => ({ error: String((error && error.message) || error) })),
@@ -1837,6 +1851,17 @@ async function runSmoke(win) {
     ]);
     const update = updater ? updater.getStatus() : null;
     const paint = await inspectWindowPaint(win);
+    // The page installs its crop-preview probe under ?smoke=1; it lives next
+    // to the code it drives, which is module scope the main process cannot
+    // reach on its own.
+    const cropPreview = await Promise.race([
+      win.webContents
+        .executeJavaScript(
+          "typeof window.__recPreviewProbe === 'function' ? window.__recPreviewProbe() : { error: 'no probe' }",
+        )
+        .catch((error) => ({ error: String((error && error.message) || error) })),
+      new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 12000)),
+    ]);
     process.stdout.write(
       "SMOKE " +
         JSON.stringify({
@@ -1847,14 +1872,13 @@ async function runSmoke(win) {
                 installMode: update.installMode,
                 ownerMachine: update.ownerMachine,
                 autoCheck: update.autoCheck,
-                channel: update.channel,
-                installedChannel: update.installedChannel,
                 updateAvailable: update.updateAvailable,
                 currentTag: update.currentTag,
                 installDir: update.installDir,
               }
             : null,
           paint: Object.assign({}, paint, { gpu: gpuSummary() }),
+          cropPreview,
           info,
         }) +
         "\n",
@@ -2181,6 +2205,21 @@ ipcMain.handle("take-open", async (_event, payload) => {
   return { ok: false };
 });
 
+// Settings > Report a problem. The URL is built here, never taken from the
+// page, so the page can only ever open a new issue on the public repo.
+ipcMain.handle("issue-report-open", async (_event, payload) => {
+  const kind = payload && payload.kind === "feature" ? "feature" : "bug";
+  const url = issueUrl(kind, { version: app.getVersion(), os: osLabel(process.platform, require("os").release()) });
+  try {
+    await shell.openExternal(url);
+    logRecorder("issue report opened", kind);
+    return { ok: true };
+  } catch (error) {
+    logRecorder("issue report open failed", String((error && error.message) || error));
+    return { ok: false };
+  }
+});
+
 ipcMain.handle("recordings-open", async () => {
   await ensureDir(recordingsDir());
   const err = await shell.openPath(recordingsDir());
@@ -2202,49 +2241,6 @@ ipcMain.handle("update-install", async (_event, payload) => {
   if (!updater) return null;
   const tag = payload && typeof payload.tag === "string" ? payload.tag : "";
   return updater.installRelease({ tag });
-});
-
-// Settings > Developer mode updates: switch the release source to the
-// private development repo (developer sign-in) or back to public releases.
-ipcMain.handle("update-set-developer-mode", async (event, payload) => {
-  if (!updater) return null;
-  const enabled = Boolean(payload && payload.enabled === true);
-  if (enabled && !updater.getStatus().developerMode) {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    const box = {
-      type: "warning",
-      buttons: ["Turn on", "Cancel"],
-      defaultId: 1,
-      cancelId: 1,
-      noLink: true,
-      title: "Developer mode updates",
-      message: "Turn on Developer mode updates?",
-      detail:
-        "Do not turn this on unless you develop Simple Recorder. It is not a public release: it installs builds from the private development repo and requires a GitHub OAuth sign-in (gh auth login) with access to that repo.",
-    };
-    const result =
-      win && !win.isDestroyed() && win.isVisible()
-        ? await dialog.showMessageBox(win, box)
-        : await dialog.showMessageBox(box);
-    if (result.response !== 0) return updater.getStatus();
-  }
-  return updater.setDeveloperMode(enabled);
-});
-
-// Settings > Your data when switching: the folder of database copies saved
-// before each update install.
-ipcMain.handle("update-open-backups", async () => {
-  const dir = path.join(dataRoot(), "backups");
-  await ensureDir(dir);
-  const err = await shell.openPath(dir);
-  return { ok: !err, error: err || "" };
-});
-
-// Settings > Backups to keep: off, a count, or all. A lower count removes the
-// oldest extras right away.
-ipcMain.handle("update-set-backup-keep", async (_event, payload) => {
-  if (!updater) return null;
-  return updater.setBackupKeep(payload && payload.keep);
 });
 
 // Any webm still in the inflight dir at boot or at the next take start is a

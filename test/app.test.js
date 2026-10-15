@@ -91,6 +91,22 @@ test("studio prefs persist: delay, chosen screen, area screen", () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("the default quality survives a restart", () => {
+  const dir = tempDir();
+  db.openDb(dir);
+  assert.equal(setup.readCaptureSetup(db).recordQuality, "1080p");
+  setup.saveRecorderPrefs(db, { recordQuality: "720p" });
+  setup.saveRecorderPrefs(db, { recordFps: 60 });
+  db.closeDb();
+  db.openDb(dir);
+  assert.equal(setup.readCaptureSetup(db).recordQuality, "720p");
+  assert.equal(setup.captureSetupStatus(setup.readCaptureSetup(db), null, "win32").prefs.recordQuality, "720p");
+  db.kvSet("recordQuality", "8k");
+  assert.equal(setup.readCaptureSetup(db).recordQuality, "1080p", "an unknown value falls back to 1080p");
+  db.closeDb();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test("delay and display ids normalize to safe values", () => {
   assert.equal(setup.normalizeRecordDelayMs(-5), 0);
   assert.equal(setup.normalizeRecordDelayMs("nope"), 0);
@@ -740,37 +756,30 @@ async function withHeaderServer(body, run) {
   }
 }
 
-test("public update checks never send a GitHub token, even when one is lying around", async () => {
+test("update checks never send a GitHub token, even when one is lying around", async () => {
   const root = tempDir();
   const saved = { GH_TOKEN: process.env.GH_TOKEN, GITHUB_TOKEN: process.env.GITHUB_TOKEN };
   process.env.GH_TOKEN = "env-token-that-must-not-leave";
   process.env.GITHUB_TOKEN = "env-token-that-must-not-leave";
-  let askedForSignIn = 0;
   try {
     await withHeaderServer([{ tag_name: "v9.0.0", name: "v9.0.0", assets: [] }], async (apiBase, seen) => {
       const mgr = updater.createUpdater({
         appRoot: path.join(root, "app"),
         dataRoot: path.join(root, "data"),
         apiBase,
-        // A token passed by a caller is dropped on the public channel too.
+        // A token passed by a caller is ignored too.
         token: "caller-token-that-must-not-leave",
-        resolveDeveloperToken: async () => {
-          askedForSignIn += 1;
-          return "developer-token";
-        },
         installInfo: { installed: true, owner: false, installDir: "", autoCheckDefault: true },
       });
       const state = await mgr.checkForUpdates();
-      assert.equal(state.channel, "public");
       assert.equal(state.repo, updater.DEFAULT_REPO);
       assert.equal(state.latestTag, "v9.0.0");
       assert.equal(seen.length, 1);
       assert.equal(seen[0].url, "/repos/" + updater.DEFAULT_REPO + "/releases?per_page=25");
-      assert.equal(seen[0].authorization, "", "the public channel must be anonymous");
-      assert.equal(askedForSignIn, 0, "the public channel must never look for a developer sign-in");
+      assert.equal(seen[0].authorization, "", "update checks must be anonymous");
     });
 
-    // A token never travels over plain HTTP or to a host other than the GitHub API.
+    // Downloads are anonymous as well.
     const sha256 = require("crypto").createHash("sha256").update("bundle-bytes").digest("hex");
     const serve = (req) => (req.url === "/latest.json" ? { assetName: "pkg.tar.gz", sha256 } : "bundle-bytes");
     await withHeaderServer(serve, async (base, seen) => {
@@ -780,7 +789,7 @@ test("public update checks never send a GitHub token, even when one is lying aro
           bundle: { name: "pkg.tar.gz", apiUrl: base + "/asset", downloadUrl: base + "/asset" },
           manifest: { name: "latest.json", apiUrl: base + "/latest.json", downloadUrl: base + "/latest.json" },
         },
-        { token: "developer-token" },
+        { token: "caller-token-that-must-not-leave" },
       );
       assert.equal(String(body), "bundle-bytes");
       assert.deepEqual(seen.map((s) => s.url), ["/asset", "/latest.json"]);
@@ -837,82 +846,52 @@ test("a release list cannot point an install at a file already on disk", async (
   }
 });
 
-test("Developer mode updates read the private development repo with the developer sign-in", async () => {
-  const root = tempDir();
-  const dataRoot = path.join(root, "data");
-  db.openDb(dataRoot);
-  const calls = [];
-  let signIn = "";
-  const mgr = updater.createUpdater({
-    appRoot: path.join(root, "app"),
-    dataRoot,
-    store: db,
-    resolveDeveloperToken: async () => signIn,
-    fetchReleases: async (repo, opts) => {
-      calls.push({ repo, token: opts.token || "" });
-      return repo === updater.DEV_REPO
-        ? [{ tag_name: "v2.0.1", name: "dev build", assets: [] }]
-        : [{ tag_name: "v2.0.0", name: "public build", assets: [] }];
-    },
-    installInfo: { installed: true, owner: false, installDir: "", autoCheckDefault: true },
-  });
-
-  // Off by default: public releases, anonymous.
-  assert.equal(mgr.getStatus().developerMode, false);
-  assert.equal((await mgr.checkForUpdates()).latestTag, "v2.0.0");
-  assert.deepEqual(calls.pop(), { repo: updater.DEFAULT_REPO, token: "" });
-
-  // On without a sign-in: an error that says how to get back to public releases.
-  const noSignIn = await mgr.setDeveloperMode(true);
-  assert.equal(noSignIn.developerMode, true);
-  assert.equal(noSignIn.channel, "developer");
-  assert.equal(noSignIn.status, "error");
-  assert.match(noSignIn.error, /gh auth login/);
-  assert.match(noSignIn.error, /Turn Developer mode updates off/);
-  assert.equal(calls.length, 0, "no request goes out without the developer sign-in");
-  assert.equal(db.readUpdatePrefs().developerMode, true, "the switch is stored in SQLite");
-
-  // Signed in: the development repo, with the sign-in attached.
-  signIn = "developer-token";
-  const dev = await mgr.checkForUpdates();
-  assert.equal(dev.latestTag, "v2.0.1");
-  assert.deepEqual(calls.pop(), { repo: updater.DEV_REPO, token: "developer-token" });
-
-  // A fresh updater (next launch) comes back on the stored channel.
-  const relaunched = updater.createUpdater({
-    appRoot: path.join(root, "app"),
-    dataRoot,
-    store: db,
-    resolveDeveloperToken: async () => signIn,
-    fetchReleases: async () => [],
-    installInfo: { installed: true, owner: false, installDir: "", autoCheckDefault: true },
-  });
-  assert.equal(relaunched.getStatus().developerMode, true);
-  assert.equal(relaunched.getStatus().repo, updater.DEV_REPO);
-
-  // Off again: back to public releases, anonymous, and stored.
-  const back = await mgr.setDeveloperMode(false);
-  assert.equal(back.channel, "public");
-  assert.equal(back.latestTag, "v2.0.0");
-  assert.deepEqual(calls.pop(), { repo: updater.DEFAULT_REPO, token: "" });
-  assert.equal(db.readUpdatePrefs().developerMode, false);
-
-  db.closeDb();
-  fs.rmSync(root, { recursive: true, force: true });
-});
-
-test("the Settings page carries the Developer mode updates switch and its warning", () => {
+test("Settings holds Default quality, which is the studio's Quality setting", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "renderer", "index.html"), "utf8");
-  assert.match(html, /data-page="settings"/);
-  assert.match(html, /data-dev-updates-switch/);
-  assert.match(html, /Do not turn this on/);
-  assert.match(html, /not a public release/);
-  assert.match(html, /GitHub\s+OAuth/);
+  const settings = html.slice(html.indexOf('data-page-panel="settings"'));
+  assert.match(settings, /Default quality/);
+  for (const q of ["720p", "1080p", "1440p"]) assert.match(settings, new RegExp('data-quality="' + q + '"'));
+  assert.equal((html.match(/data-quality-group/g) || []).length, 2, "studio and Settings each carry a Quality group");
+  for (const gone of [/data-dev-updates/, /Developer mode/, /data-backup/, /data-open-backups/]) {
+    assert.doesNotMatch(html, gone);
+  }
   const preload = fs.readFileSync(path.join(__dirname, "..", "electron", "preload.cjs"), "utf8");
-  assert.match(preload, /update-set-developer-mode/);
+  assert.doesNotMatch(preload, /update-set-developer-mode|update-open-backups|update-set-backup-keep/);
+  assert.equal(setup.normalizeRecordQuality("1440p"), "1440p");
+  assert.equal(setup.normalizeRecordQuality("4k"), "1080p");
 });
 
-test("shipped app code only reads a GitHub token for Developer mode updates", () => {
+test("Report a problem opens a new issue on the public repo with only the version and Windows version", () => {
+  const report = require("../lib/issue-report");
+  const bug = new URL(report.issueUrl("bug", { version: "1.2.3", os: report.osLabel("win32", "10.0.22631") }));
+  assert.equal(bug.origin + bug.pathname, "https://github.com/Josephivgi/simple-recorder/issues/new");
+  assert.deepEqual(Object.fromEntries(bug.searchParams), {
+    template: "bug_report.yml",
+    version: "v1.2.3",
+    os: "Windows 11 (10.0.22631)",
+  });
+  assert.equal(report.osLabel("win32", "10.0.19045"), "Windows 10 (10.0.19045)");
+  const feature = new URL(report.issueUrl("feature", { version: "1.2.3", os: "Windows 11" }));
+  assert.deepEqual(Object.fromEntries(feature.searchParams), { template: "feature_request.yml", version: "v1.2.3" });
+  // A version that is not plain x.y.z is left out rather than passed along.
+  assert.equal(new URL(report.issueUrl("bug", { version: "C:\\Users\\Example" })).searchParams.has("version"), false);
+  assert.throws(() => report.issueUrl("https://example.com"), /Unknown report kind/);
+
+  // The forms exist and carry the fields the app fills in.
+  const forms = path.join(__dirname, "..", ".github", "ISSUE_TEMPLATE");
+  for (const [kind, file] of Object.entries(report.TEMPLATES)) {
+    const yml = fs.readFileSync(path.join(forms, file), "utf8");
+    assert.match(yml, /id: version\b/, file);
+    if (kind === "bug") assert.match(yml, /id: os\b/, file);
+  }
+  const html = fs.readFileSync(path.join(__dirname, "..", "renderer", "index.html"), "utf8");
+  assert.match(html, /data-report="bug"/);
+  assert.match(html, /data-report="feature"/);
+  const preload = fs.readFileSync(path.join(__dirname, "..", "electron", "preload.cjs"), "utf8");
+  assert.match(preload, /issue-report-open/);
+});
+
+test("shipped app code never reads a GitHub token or calls the GitHub CLI", () => {
   const root = path.join(__dirname, "..");
   const files = [];
   for (const dir of ["electron", "lib", "renderer"]) {
@@ -921,15 +900,14 @@ test("shipped app code only reads a GitHub token for Developer mode updates", ()
   for (const rel of files) {
     const text = fs.readFileSync(path.join(root, rel), "utf8");
     assert.doesNotMatch(text, /process\.env\.(GH_TOKEN|GITHUB_TOKEN|REC_GITHUB_TOKEN)/, rel + " reads a token from the environment");
-    if (rel !== path.join("lib", "updater.js")) {
-      assert.doesNotMatch(text, /["']auth["'],\s*["']token["']/, rel + " asks the GitHub CLI for a token");
-    }
+    assert.doesNotMatch(text, /["']auth["'],\s*["']token["']/, rel + " asks the GitHub CLI for a token");
+    assert.doesNotMatch(text, /exec(File)?(Sync)?\(\s*["']gh["']/, rel + " calls the GitHub CLI");
   }
   const installer = fs.readFileSync(path.join(root, "scripts", "install.cjs"), "utf8");
   assert.doesNotMatch(installer, /execFileSync\("gh"/, "the installer must not call the GitHub CLI");
 });
 
-test("a newer build's data survives an older build, and every snapshot is a checked copy", () => {
+test("a newer build's data survives an older build", () => {
   const root = tempDir();
   const dataRoot = path.join(root, "data");
   db.openDb(dataRoot);
@@ -950,25 +928,16 @@ test("a newer build's data survives an older build, and every snapshot is a chec
   assert.deepEqual(db.schemaInfo(), { schemaVersion: db.SCHEMA_VERSION, dbSchemaVersion: 99, newerData: true });
   // An older build does its normal writes.
   db.writeSetup({ screen: true, mic: false, recordFps: 60 });
-  db.writeUpdatePrefs({ developerMode: false, installedChannel: "public", installedVersion: "1.2.0" });
+  db.writeUpdatePrefs({ installedVersion: "1.2.0" });
   db.insertTake({ id: "t1", name: "Take", path: "x.mp4", mime: "video/mp4" });
-
-  const backup = path.join(dataRoot, "backups", "copy.db");
-  const snap = db.snapshotDb(backup);
-  assert.equal(snap.file, backup);
-  assert.ok(snap.size > 0);
-  assert.throws(() => db.snapshotDb(backup), /already exists/);
   db.closeDb();
 
-  for (const file of [path.join(dataRoot, "recorder.db"), backup]) {
-    const check = new DatabaseSync(file, { readOnly: true });
-    assert.equal(check.prepare("SELECT note FROM future_things WHERE id = 'a'").get().note, "kept");
-    assert.equal(check.prepare("SELECT value FROM kv WHERE key = 'futurePref'").get().value, "on");
-    assert.equal(check.prepare("SELECT value FROM kv WHERE key = 'schemaVersion'").get().value, "99");
-    assert.equal(check.prepare("SELECT future_flag FROM takes WHERE id = 't1'").get().future_flag, 7);
-    assert.equal(check.prepare("SELECT value FROM kv WHERE key = 'updateInstalledChannel'").get().value, "public");
-    check.close();
-  }
+  const check = new DatabaseSync(path.join(dataRoot, "recorder.db"), { readOnly: true });
+  assert.equal(check.prepare("SELECT note FROM future_things WHERE id = 'a'").get().note, "kept");
+  assert.equal(check.prepare("SELECT value FROM kv WHERE key = 'futurePref'").get().value, "on");
+  assert.equal(check.prepare("SELECT value FROM kv WHERE key = 'schemaVersion'").get().value, "99");
+  assert.equal(check.prepare("SELECT future_flag FROM takes WHERE id = 't1'").get().future_flag, 7);
+  check.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -1005,118 +974,67 @@ function setAppVersion(appRoot, version, marker) {
   fs.writeFileSync(path.join(appRoot, "renderer", "app.js"), "// " + marker);
 }
 
-test("a copy moves between public and developer builds and back, saving its data each time", async () => {
+test("settings left by Developer mode and backups never move an install off public releases", async () => {
   const root = tempDir();
   const appRoot = updaterAppRoot(root);
   const dataRoot = path.join(root, "data");
-  const feeds = {
-    [updater.DEFAULT_REPO]: [await localRelease(root, appRoot, "v1.2.1", "public-121")],
-    [updater.DEV_REPO]: [
-      await localRelease(root, appRoot, "v1.2.2", "dev-122"),
-      await localRelease(root, appRoot, "v1.2.1", "dev-121"),
-    ],
-  };
-  setAppVersion(appRoot, "1.2.1", "public-121");
+  const feed = [await localRelease(root, appRoot, "v2.0.0", "new")];
+  setAppVersion(appRoot, "1.0.0", "old");
+  const backupDir = path.join(dataRoot, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const oldBackup = path.join(backupDir, "recorder-2026-01-01T00-00-00-000Z-public-v1.0.0-to-developer-v1.0.1.db");
+  fs.writeFileSync(oldBackup, "old copy");
 
   db.openDb(dataRoot);
-  db.kvSet("futurePref", "from-a-newer-build");
+  db.kvSet("updateDeveloperMode", "1");
+  db.kvSet("updateInstalledChannel", "developer");
+  db.kvSet("updateBackupKeep", "off");
+  const repos = [];
   const mgr = updater.createUpdater({
     appRoot,
     dataRoot,
     store: db,
     feedFile: path.join(root, "feed.json"),
-    resolveDeveloperToken: async () => "developer-token",
-    fetchReleases: async (repo) => feeds[repo],
-    installInfo: { installed: true, owner: false, installDir: "", autoCheckDefault: true },
-  });
-  const appJs = () => fs.readFileSync(path.join(appRoot, "renderer", "app.js"), "utf8");
-  const backupDir = path.join(dataRoot, "backups");
-  const backups = () => (fs.existsSync(backupDir) ? fs.readdirSync(backupDir).sort() : []);
-
-  // A public install on the newest public release: nothing to do.
-  let s = await mgr.checkForUpdates();
-  assert.equal(s.installedChannel, "public");
-  assert.equal(s.updateAvailable, false);
-
-  // Developer mode on: the newest developer build is offered as a switch.
-  s = await mgr.setDeveloperMode(true);
-  assert.equal(s.switchAvailable, true);
-  assert.equal(s.latestTag, "v1.2.2");
-  s = await mgr.installRelease({ tag: s.latestTag });
-  assert.equal(s.error, "");
-  assert.equal(s.installedChannel, "developer");
-  assert.equal(s.currentTag, "v1.2.2");
-  assert.equal(s.needsRestart, true);
-  assert.equal(appJs(), "// dev-122");
-  assert.equal(backups().length, 1);
-  assert.match(backups()[0], /-public-v1\.2\.1-to-developer-v1\.2\.2\.db$/);
-
-  // Developer mode off: the public release is offered even though it is older.
-  s = await mgr.setDeveloperMode(false);
-  assert.equal(s.switchAvailable, true);
-  assert.equal(s.latestTag, "v1.2.1");
-  s = await mgr.installRelease({ tag: s.latestTag });
-  assert.equal(s.installedChannel, "public");
-  assert.equal(s.currentTag, "v1.2.1");
-  assert.equal(appJs(), "// public-121");
-  assert.equal(backups().length, 2);
-  assert.ok(backups().some((name) => /-developer-v1\.2\.2-to-public-v1\.2\.1\.db$/.test(name)));
-
-  // Back on public nothing more is offered; with Developer mode on again, the
-  // developer build this copy no longer has is offered again.
-  s = await mgr.checkForUpdates();
-  assert.equal(s.updateAvailable, false);
-  s = await mgr.setDeveloperMode(true);
-  assert.equal(s.switchAvailable, true);
-  assert.equal(s.latestTag, "v1.2.2");
-  assert.equal(db.readUpdatePrefs().installedChannel, "public");
-
-  // Data from the newer build stayed through both switches, and each backup holds it.
-  assert.equal(db.kvGet("futurePref", ""), "from-a-newer-build");
-  const { DatabaseSync } = require("node:sqlite");
-  for (const name of backups()) {
-    const copy = new DatabaseSync(path.join(backupDir, name), { readOnly: true });
-    assert.equal(copy.prepare("SELECT value FROM kv WHERE key = 'futurePref'").get().value, "from-a-newer-build");
-    copy.close();
-  }
-  db.closeDb();
-  fs.rmSync(root, { recursive: true, force: true });
-});
-
-test("nothing installs when the data copy fails, and a source checkout is never rewritten", async () => {
-  const root = tempDir();
-  const appRoot = updaterAppRoot(root);
-  const feed = [await localRelease(root, appRoot, "v2.0.0", "new")];
-  setAppVersion(appRoot, "1.0.0", "old");
-  const appJs = () => fs.readFileSync(path.join(appRoot, "renderer", "app.js"), "utf8");
-  const base = {
-    appRoot,
-    dataRoot: path.join(root, "data"),
-    feedFile: path.join(root, "feed.json"),
-    fetchReleases: async () => feed,
-  };
-
-  const failing = updater.createUpdater({
-    ...base,
-    store: {
-      snapshotDb: () => {
-        throw new Error("disk full");
-      },
+    fetchReleases: async (repo, opts) => {
+      repos.push({ repo, token: opts.token || "" });
+      return feed;
     },
     installInfo: { installed: true, owner: false, installDir: "", autoCheckDefault: true },
   });
-  assert.equal((await failing.checkForUpdates()).updateAvailable, true);
-  let s = await failing.installRelease({ tag: "v2.0.0" });
-  assert.equal(s.status, "error");
-  assert.match(s.error, /nothing was installed.*disk full/);
-  assert.equal(appJs(), "// old");
+  let s = await mgr.checkForUpdates();
+  assert.equal(s.repo, updater.DEFAULT_REPO);
+  assert.deepEqual(repos, [{ repo: updater.DEFAULT_REPO, token: "" }]);
+  assert.equal(s.updateAvailable, true);
+  assert.equal(s.latestTag, "v2.0.0");
+  s = await mgr.installRelease({ tag: "v2.0.0" });
+  assert.equal(s.error, "");
+  assert.equal(s.currentTag, "v2.0.0");
+  assert.equal(s.needsRestart, true);
+  assert.equal(fs.readFileSync(path.join(appRoot, "renderer", "app.js"), "utf8"), "// new");
+  // Up to date afterwards, and nothing older is offered.
+  s = await mgr.checkForUpdates();
+  assert.equal(s.updateAvailable, false);
 
-  const checkout = updater.createUpdater({ ...base, installInfo: { installed: false, autoCheckDefault: false } });
+  // The old keys and backup files are left alone, never read or deleted.
+  assert.equal(db.kvGet("updateDeveloperMode", ""), "1");
+  assert.equal(db.kvGet("updateBackupKeep", ""), "off");
+  assert.deepEqual(fs.readdirSync(backupDir), [path.basename(oldBackup)]);
+  db.closeDb();
+
+  // A source checkout lists releases but is never rewritten.
+  setAppVersion(appRoot, "1.0.0", "old");
+  const checkout = updater.createUpdater({
+    appRoot,
+    dataRoot,
+    feedFile: path.join(root, "feed.json"),
+    fetchReleases: async () => feed,
+    installInfo: { installed: false, autoCheckDefault: false },
+  });
   s = await checkout.checkForUpdates();
   assert.equal(s.updateAvailable, false);
   s = await checkout.installRelease({ tag: "v2.0.0" });
   assert.match(s.error, /source checkout/);
-  assert.equal(appJs(), "// old");
+  assert.equal(fs.readFileSync(path.join(appRoot, "renderer", "app.js"), "utf8"), "// old");
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -1137,68 +1055,89 @@ test("renderer scripts parse the way their pages load them", () => {
   }
 });
 
-test("backups keep the newest few, can be turned off, and leave other files alone", async () => {
-  assert.deepEqual(db.BACKUP_KEEP_CHOICES, updater.BACKUP_KEEP_CHOICES);
-  assert.equal(db.BACKUP_KEEP_DEFAULT, updater.BACKUP_KEEP_DEFAULT);
-  const root = tempDir();
-  const appRoot = updaterAppRoot(root);
-  const dataRoot = path.join(root, "data");
-  const feed = [await localRelease(root, appRoot, "v2.0.0", "new")];
-  setAppVersion(appRoot, "1.0.0", "old");
-  const backupDir = path.join(dataRoot, "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const seeded = ["01", "02", "03"].map((m) => "recorder-2026-" + m + "-01T00-00-00-000Z-public-v1.0.0-to-public-v1.0.1.db");
-  for (const name of seeded) fs.writeFileSync(path.join(backupDir, name), "old copy");
-  fs.writeFileSync(path.join(backupDir, "my-notes.txt"), "not a backup");
-  const backups = () => fs.readdirSync(backupDir).filter((n) => n.endsWith(".db")).sort();
+test("the app ships its own icon, not Electron's, everywhere an icon shows", () => {
+  const root = path.join(__dirname, "..");
+  const { readIcon } = require("../lib/icon-resource.cjs");
+  const icoPath = path.join(root, "assets", "icon.ico");
+  const pngPath = path.join(root, "assets", "icon.png");
+  assert.equal(fs.existsSync(icoPath), true, "assets/icon.ico is missing");
+  assert.equal(fs.existsSync(pngPath), true, "assets/icon.png is missing");
 
-  db.openDb(dataRoot);
-  assert.equal(db.readUpdatePrefs().backupKeep, "2");
-  db.writeUpdatePrefs({ backupKeep: "7" });
-  assert.equal(db.readUpdatePrefs().backupKeep, "2", "an unknown limit is ignored");
-  const mgr = updater.createUpdater({
-    appRoot,
-    dataRoot,
-    store: db,
-    feedFile: path.join(root, "feed.json"),
-    fetchReleases: async () => feed,
-    installInfo: { installed: true, owner: false, installDir: "", autoCheckDefault: true },
-  });
-  let s = mgr.getStatus();
-  assert.equal(s.backupKeep, "2");
-  assert.equal(s.backupCount, 3);
-  assert.equal(s.backupBytes, 3 * "old copy".length);
+  // Windows picks a size out of the .ico per surface, so the small sizes
+  // matter as much as 256.
+  const icon = readIcon(icoPath);
+  const sizes = icon.images.map((image) => image.width);
+  for (const size of [16, 24, 32, 48, 64, 128, 256]) {
+    assert.ok(sizes.includes(size), "the .ico has no " + size + "px image");
+  }
+  assert.deepEqual(
+    fs.readFileSync(pngPath).subarray(0, 8),
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    "assets/icon.png is not a PNG",
+  );
 
-  // A new backup, then only the newest two stay.
-  s = await mgr.installRelease({ tag: "v2.0.0" });
-  assert.equal(s.error, "");
-  assert.equal(backups().length, 2);
-  assert.equal(backups()[0], seeded[2]);
-  assert.match(backups()[1], /-to-public-v2\.0\.0\.db$/);
-  assert.equal(s.backupCount, 2);
+  // Every icon surface: the window, the shortcuts, the uninstall entry, the
+  // exe's own resources, and the setup.
+  const main = fs.readFileSync(path.join(root, "electron", "main.cjs"), "utf8");
+  assert.match(main, /function appIconFile\(\)/);
+  assert.match(main, /\.\.\.\(icon \? \{ icon \} : \{\}\)/);
+  const installer = fs.readFileSync(path.join(root, "scripts", "install.cjs"), "utf8");
+  assert.match(installer, /SR_ICON: appIconFile\(installDir\)/);
+  assert.match(installer, /appIconFile\(installDir\) \|\| exePath\(installDir\)/);
+  assert.match(installer, /applyIcon\(exePath\(installDir\), iconFile\)/);
+  const nsi = fs.readFileSync(path.join(root, "scripts", "installer.nsi"), "utf8");
+  assert.match(nsi, /Icon "\$\{ICON\}"/);
+  const pack = fs.readFileSync(path.join(root, "scripts", "pack-setup.cjs"), "utf8");
+  assert.match(pack, /\/DICON=\$\{icon\}/);
 
-  // Off: the next install makes no copy and keeps the ones there.
-  s = mgr.setBackupKeep("off");
-  assert.equal(s.backupKeep, "off");
-  assert.equal(db.readUpdatePrefs().backupKeep, "off");
-  s = await mgr.installRelease({ tag: "v2.0.0" });
-  assert.equal(s.error, "");
-  assert.equal(backups().length, 2);
-
-  // All keeps every one; lowering the limit removes the oldest right away.
-  mgr.setBackupKeep("all");
-  await mgr.installRelease({ tag: "v2.0.0" });
-  await new Promise((r) => setTimeout(r, 5));
-  await mgr.installRelease({ tag: "v2.0.0" });
-  assert.equal(backups().length, 4);
-  assert.equal(mgr.setBackupKeep("bogus").backupKeep, "all");
-  s = mgr.setBackupKeep("2");
-  assert.equal(backups().length, 2);
-  assert.ok(!backups().includes(seeded[2]));
-  assert.equal(s.backupCount, 2);
-  assert.ok(fs.existsSync(path.join(backupDir, "my-notes.txt")), "files that are not backups are never removed");
-  db.closeDb();
-  fs.rmSync(root, { recursive: true, force: true });
+  // The icon is part of the app tree, so an update has to carry it.
+  assert.equal(updater.isAllowedAppPath("assets/icon.ico"), true);
+  assert.ok(installLayout.APP_DIRS.includes("assets"), "the installer does not copy assets/");
 });
 
+test("the crop preview shows the crop whether the live capture starts or not", () => {
+  const root = path.join(__dirname, "..");
+  const app = fs.readFileSync(path.join(root, "renderer", "app.js"), "utf8");
+  const css = fs.readFileSync(path.join(root, "renderer", "app.css"), "utf8");
+  const preload = fs.readFileSync(path.join(root, "electron", "preload.cjs"), "utf8");
+  const capture = fs.readFileSync(path.join(root, "electron", "media-capture.cjs"), "utf8");
 
+  // One placement for both layers: the crop box fills the frame, and the
+  // frame clips the rest. A still that was not placed by that math would be
+  // the whole desktop again, which is what looked broken.
+  assert.match(app, /function cropPlacement\(rectW, rectH, srcW, srcH, crop\)/);
+  assert.match(app, /place\(live, live\.videoWidth, live\.videoHeight\)/);
+  assert.match(app, /place\(still, still\.naturalWidth, still\.naturalHeight\)/);
+  assert.ok(!app.includes("placeCropPreviewVideo"), "the old full-screen placement is still there");
+  assert.ok(!app.includes("data-area-preview"), "the dead crop-box hook is still there");
+
+  // The still fallback: refreshed on a timer, applied only once it decodes,
+  // and announced in the frame with a way back to the live capture.
+  assert.match(app, /async function refreshPreviewStill\(\)/);
+  assert.match(app, /api\.screenStill\(\{/);
+  assert.match(app, /data-area-note-text/);
+  assert.match(app, /data-area-retry/);
+  assert.match(app, /function retryCropPreview\(\)/);
+  assert.match(app, /Live preview unavailable · showing a still image/);
+
+  // The fallback exists because the capturer can refuse: the still comes
+  // from main's own screenshot path, not from the page's video capture.
+  assert.match(preload, /screenStill: \(payload\) => ipcRenderer\.invoke\("capture-screen-still"/);
+  assert.match(capture, /registerHandle\("capture-screen-still"/);
+  assert.match(capture, /STILL_THUMB_SIZE/);
+
+  // The still is hidden until it is placed, and the live frame wins when it
+  // lands.
+  assert.match(css, /\.area-frame\.has-still \.area-still \{\s*visibility: visible;/);
+  assert.match(css, /\.area-frame\.has-live \.area-still \{\s*visibility: hidden;/);
+  assert.ok(!css.includes(".area-frame img {"), "the full-frame thumbnail rule is still there");
+
+  // The smoke run drives the whole path inside the real renderer, and only a
+  // smoke run installs the hook that lets it.
+  const main = fs.readFileSync(path.join(root, "electron", "main.cjs"), "utf8");
+  assert.match(app, /new URLSearchParams\(location\.search\)\.has\("smoke"\)/);
+  assert.match(app, /window\.__recPreviewProbe = smokePreviewProbe/);
+  assert.match(main, /window\.__recPreviewProbe\(\)/);
+  assert.match(main, /query: \{ smoke: "1" \}/);
+  assert.match(main, /cropPreview,/);
+});

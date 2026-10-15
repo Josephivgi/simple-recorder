@@ -26,15 +26,24 @@ pushes from the dev repo to the public repo on its own.
 
 ## Layout
 
+- `assets/icon.png`, `assets/icon.ico`: the app icon (a slate plate, a white
+  record ring, a red dot). Both files are generated, never hand-edited:
+  `npm run icon` redraws them from `scripts/make-icon.cjs`, which computes
+  the pixels, supersamples them for smooth edges, and encodes PNG and ICO
+  itself (the .ico carries 16/24/32/48/64/128/256, bitmaps up to 48 and
+  PNG for the rest). They ship inside the app tree so an update carries them
+  too, and `assets` is in the updater's allowed paths for that reason.
 - `electron/main.cjs`: windows, overlay bar + area/window pickers + take
-  outline strips, take-write IPC, take index, inflight recovery, hotkey.
+  outline strips, take-write IPC, take index, inflight recovery, hotkey. The
+  main window takes `assets/icon.ico` (the PNG off Windows) as its icon.
 - `electron/media-capture.cjs`: Chromium session permission handlers,
   `desktopCapturer` source picks, window-to-crop resolution, OS consent
-  status, prefs IPC.
+  status, prefs IPC, and `capture-screen-still`: one fresh 1280x720 JPEG of
+  one screen, which is what the studio's crop preview falls back to.
 - `electron/preload.cjs`: `window.rec` for the launcher page.
 - `electron/overlay-preload.cjs`: `window.overlay` for bar/picker windows.
 - `lib/db.js`: SQLite (node:sqlite) at `userData/data/recorder.db`:
-  `kv` prefs/consent/update channel, `takes` index.
+  `kv` prefs/consent/update state, `takes` index.
 - `lib/capture-setup.js`: persisted consent shape and OS status helpers.
 - `lib/library-folders.js`: the recordings library: the `Simple recorder`
   root, the `yyyy-mm-dd` day folders, take-name bumps, and the idempotent
@@ -43,15 +52,25 @@ pushes from the dev repo to the public repo on its own.
 - `lib/window-rect.cjs`: Win32 window rect by title (async PowerShell,
   EnumWindows + GetWindowRect), the bridge from a desktopCapturer name to
   a screen-space crop.
+- `lib/icon-resource.cjs`: writes `assets/icon.ico` into a Windows
+  executable's resources, so the installed `Simple Recorder.exe` stops
+  showing Electron's atom in Explorer and on the taskbar. There is no
+  resource compiler on the install path, so it goes through the Win32
+  resource API (BeginUpdateResource / UpdateResource / EndUpdateResource)
+  from a short PowerShell script: no dependency, no build step. A failure
+  discards the whole update, so a bad icon can never cost the app its
+  launcher, and `applyIcon` reports instead of throwing. It never deletes an
+  image id it does not use (a failed delete inside an open update session
+  makes the group write fail with an internal error); a leftover image from
+  a bigger icon stays unreferenced.
 - `lib/updater.js`: GitHub Releases update system. Lists published versions,
   checks for updates, and installs a release via atomic staging. A
   downloaded package must match the sha256 and asset name in its release's
   `latest.json`, or the install stops; a release without `latest.json` is
   refused. Local package paths and the source-tarball fallback only work in
-  feed-file test mode (`REC_UPDATE_FEED_FILE`). Two
-  channels: public releases (`Josephivgi/simple-recorder`, always anonymous)
-  and Developer mode updates (`Josephivgi/simple-recorder-dev`, see below).
-  Installed builds ping their channel on their own (boot plus a 15-minute
+  feed-file test mode (`REC_UPDATE_FEED_FILE`). It reads only public
+  releases (`Josephivgi/simple-recorder`), always anonymously.
+  Installed builds ping it on their own (boot plus a 15-minute
   poll), so finding a release is automatic and there is no check button. The
   sidebar Updates box is a status line ("New update detected") plus one wide
   Download button; once the download has landed the app relaunches itself,
@@ -66,11 +85,15 @@ pushes from the dev repo to the public repo on its own.
   pings GitHub on its own. The manifest's `owner` flag is an informational
   developer label, set only by `install.cjs --owner`.
 - `scripts/install.cjs`: installs the app on Windows (`npm run app:install`).
-  Copies the bundled Electron runtime, renames the launcher, lays the app tree
+  Copies the bundled Electron runtime, renames the launcher, paints the app
+  icon into that launcher (`lib/icon-resource.cjs`; `--no-icon` skips it,
+  and a failure is reported, never fatal), lays the app tree
   into `resources\app`, writes `install.json` and
   `Uninstall Simple Recorder.cmd`, and adds Start Menu + Desktop shortcuts and
   an HKCU Add-or-Remove-Programs entry. Per user, no admin. It assumes the
-  public repo and never calls the GitHub CLI or reads a GitHub token.
+  public repo and never calls the GitHub CLI or reads a GitHub token. The
+  shortcuts and the uninstall entry take their icon from
+  `resources\app\assets\icon.ico`, falling back to the launcher itself.
 - `scripts/uninstall.cjs`: the uninstaller, run by the installed launcher as
   plain Node (`ELECTRON_RUN_AS_NODE=1`). Removes shortcuts, the registry key,
   and then the folder; the folder is deleted straight away when the
@@ -95,22 +118,33 @@ pushes from the dev repo to the public repo on its own.
   fits the window; nothing scrolls at the default size. The boxes use custom
   pickers, plus a bottom dock with Start Recorder Bar. Takes is the saved
   files grouped under the day folder each one sits in (recent takes, open
-  folder). Settings holds Developer mode updates and Your data when
-  switching (which channel this copy is, Backups to keep, and the backups
-  folder). The studio page fits the
+  folder). Settings holds Default quality (720p/1080p/1440p), the same
+  `recordQuality` pref the studio Quality box sets, saved in SQLite so it
+  survives a restart, and Report a problem (Report a bug / Suggest a
+  feature). Those buttons call `issue-report-open`; main builds the URL with
+  `lib/issue-report.js` (always the public repo's `issues/new` with one of
+  the `.github/ISSUE_TEMPLATE` forms, prefilled with only the app version and
+  Windows version) and opens it in the browser. The studio page fits the
   window; the source list and the takes grid scroll inside their own boxes.
   The boxes set up the take; once the bar is open they lock and follow the
   bar's changes. The take engine (getDisplayMedia, MediaRecorder, chunk
   streaming) lives in `app.js`. The Source box has no header text: one spaced
   row of normal buttons (Full screen, Draw crop, and Clear crop once one is
-  set), with the crop preview below it while a crop is set. The studio has no
+  set), with the crop preview below it while a crop is set. That preview
+  always shows the rectangle a take records: a live screen capture at 30 fps
+  is the intent, and a still screenshot stands in when the capturer will not
+  start (`NotReadableError` on a wedged Windows capture stack), refreshed on
+  a 1.2s timer, with a note in the frame and a Retry that reopens the live
+  capture without redrawing the crop. Both layers are placed by the same
+  contain-and-shift math and clipped by the frame, so a refused capture can
+  never leave a full uncropped desktop or an empty box behind. The studio has no
   window list; the bar's Window picker still frames a window's rect as a crop
   through `lib/window-rect.cjs`.
 - `renderer/overlay.{html,css,js}`: the floating bar and pickers.
 
 ## Data
 
-- Prefs/consent/take metadata/update channel: SQLite under
+- Prefs/consent/take metadata/update state: SQLite under
   `%APPDATA%\Simple Recorder\data`.
 - Take files: `%APPDATA%\Simple Recorder\data\inflight-takes` while
   recording, then moved to `Videos\Simple recorder\<yyyy-mm-dd>\`, one
@@ -136,11 +170,18 @@ pushes from the dev repo to the public repo on its own.
 - `npm start`: run the app.
 - `npm test`: unit tests (node:test, main-process modules only).
 - `npm run smoke`: hidden boot, prints `SMOKE {...}` JSON (bridge, studio
-  panels, Start Recorder Bar, take day groups present, the update mode and
-  channel, and the Developer mode updates switch), exits. If Electron fails
+  panels, Start Recorder Bar, take day groups present, the update mode, the
+  Default quality, and `cropPreview`), exits. The crop preview probe sets a
+  crop, takes the failed-live path, pulls one still through the app's own
+  IPC, and reports the frame's real geometry: `cropTrue` means the crop
+  region is rendered as large as the frame allows and never cut, which is the
+  check that the preview is not showing the whole desktop. The page installs
+  that probe only when it is loaded with `?smoke=1`, so a normal launch
+  carries no debug hook. If Electron fails
   with `protocol` undefined, `ELECTRON_RUN_AS_NODE` is set in the shell;
   clear it.
 - `npm run gate`: the security gate over the working tree and its history.
+- `npm run icon`: redraw `assets/icon.png` and `assets/icon.ico`.
 - `npm run promote`: promote HEAD to the public repo as its dev release version.
 - `npm run app:install`: install the app for the current user (see above).
 - `npm run app:verify`: verify an installed app and boot it hidden.
@@ -154,62 +195,36 @@ is single-instance, so stop the old process before relaunching. On X11,
 screen sources have no usable `display_id`; media-capture maps them to
 displays by order.
 
-## Update channels
+## Updates
 
-`install.json` decides whether a build is on a release channel at all:
+`install.json` decides whether a build updates at all:
 
 - **End-user install** (`SimpleRecorder-Setup.exe` or `npm run app:install`):
   an `installed` folder under `%LOCALAPPDATA%\Programs\Simple Recorder` with
-  shortcuts and an uninstall entry. It pings its channel on launch and every
+  shortcuts and an uninstall entry. It pings GitHub Releases on launch and every
   15 minutes; when a newer release is published the panel says "New update
   detected" and offers Download. Pressing it downloads, installs, and the app
   relaunches into the new build on its own.
 - **Source checkout** (no `install.json`): the boot and poll checks do not
   run there, so a release can never rewrite the checkout a developer works in.
 
-Which repo an install reads is the Settings page's **Developer mode updates**
-switch, stored in SQLite (`updateDeveloperMode`):
+Every update request is anonymous: the app never reads a token from the
+environment or the GitHub CLI, and a token a caller passes is ignored. Only a
+release newer than the running version is offered. A source checkout lists
+releases but is never offered or given an install.
 
-- **Off (default):** public releases from `Josephivgi/simple-recorder`. Every
-  request is anonymous. The public channel drops any token a caller passes and
-  never reads one from the environment or the GitHub CLI.
-- **On:** developer builds from the private `Josephivgi/simple-recorder-dev`.
-  The page says not to turn it on: it is not a public release, it is only for
-  developers of the app, and it needs a GitHub OAuth sign-in. Turning it on
-  also asks for confirmation in a native dialog. The sign-in is the GitHub
-  CLI's OAuth token (`gh auth login`), read with `gh auth token` only while the
-  switch is on, kept in memory only, sent only over HTTPS to `api.github.com`,
-  and never forwarded on a redirect to another host. With no sign-in the panel
-  shows an error that says to turn the switch off for public releases.
-
-Switching channels moves the install, not just the source. SQLite records
-which channel the running app tree came from (`updateInstalledChannel`; a
-database from before this was tracked takes its current channel). When the
-switch points at the other channel, that channel's newest release is offered
-whatever its version ("Switch to public release v1.2.1"), so a developer
-build can go back to an older public release and pick up the newer developer
-build again later. A source checkout lists releases but is never offered or
-given an install.
-
-Data safety across channels:
+Data safety:
 
 - Schema changes are additive only (new tables, new columns with defaults,
-  new kv keys; nothing dropped, renamed, or rewritten). Builds from either
-  channel share one database and leave data they do not know about in place.
-  `schemaVersion` in kv is the highest schema any build wrote and is never
-  lowered (`db.schemaInfo().newerData` is true on an older build).
-- Before every install the database is copied with `VACUUM INTO` to
-  `data/backups/recorder-<time>-<fromChannel>-<fromTag>-to-<toChannel>-<toTag>.db`,
-  checked with `PRAGMA quick_check`, never overwriting a file. If the copy
-  fails, nothing installs. Settings > Your data when switching opens the
-  folder and sets Backups to keep (`updateBackupKeep`: off / 2 / 5 / 10 /
-  all, default 2). After a good backup, and when the limit is lowered, the
-  oldest files matching the backup name beyond the limit are removed; other
-  files in the folder are never touched. Off makes no copy before an install
-  and keeps the ones already there.
+  new kv keys; nothing dropped, renamed, or rewritten), so an older build
+  leaves data it does not know about in place. `schemaVersion` in kv is the
+  highest schema any build wrote and is never lowered
+  (`db.schemaInfo().newerData` is true on an older build).
+- Builds up to v1.2.2 had Developer mode updates and pre-update backups. Their
+  kv keys (`updateDeveloperMode`, `updateInstalledChannel`, `updateBackupKeep`)
+  and any files in `data/backups` are left in place and never read or deleted.
 - Takes, recordings, and logs live outside the app tree and are never touched
-  by an install. Every install ends in a relaunch, even when a channel switch
-  keeps the same version number.
+  by an install. Every install ends in a relaunch.
 
 The update flow has three deliberate properties: finding a release is
 automatic (no check button), there is no switch to stop it, and applying one
@@ -234,7 +249,8 @@ in each:
 
 - **Dev repo** (`simple-recorder-dev`): every push to `main` runs the gate,
   bumps the patch past the highest dev release, builds, and publishes a
-  developer build there. Only Developer mode updates can see it.
+  developer build there. Installed copies never read it; it sets the version
+  `npm run promote` ships.
 - **Public repo** (`simple-recorder`): only a `v*` tag (pushed by
   `npm run promote`) or a manual run on `main` releases. A push to `main`
   without a tag runs the gate and stops. A release job runs only after every
@@ -256,7 +272,7 @@ a release when any of these fail:
 4. Commit authors: on the public repo every author and committer must be a
    GitHub noreply address.
 5. Shipped app code (`electron/`, `lib/`, `renderer/`) reading a GitHub token
-   anywhere but the Developer mode updates path.
+   or calling the GitHub CLI anywhere.
 6. `npm audit` (high or critical) and the unit tests.
 7. The built update bundle: only allowed app paths, scanned with the same
    patterns as the source.

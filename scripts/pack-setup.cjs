@@ -77,6 +77,10 @@ function findMakensis(env) {
 async function buildSetupExe(version) {
   const makensis = findMakensis(process.env);
   if (!makensis) return { ok: false, error: "makensis (NSIS) not found" };
+  const icon = path.join(ROOT, "assets", "icon.ico");
+  if (!fssync.existsSync(icon)) {
+    return { ok: false, error: "assets/icon.ico is missing (run `npm run icon`)" };
+  }
   const setupPath = path.join(DIST_DIR, SETUP_NAME);
   const stageParent = await fs.mkdtemp(path.join(os.tmpdir(), "sr-setup-"));
   const stageDir = path.join(stageParent, APP_NAME);
@@ -111,6 +115,7 @@ async function buildSetupExe(version) {
         `/DVIVERSION=${fileVersion(version)}`,
         `/DSTAGE=${stageDir}`,
         `/DOUTFILE=${setupPath}`,
+        `/DICON=${icon}`,
         NSIS_SCRIPT,
       ],
       { stdio: "inherit", timeout: 900000, windowsHide: true },
