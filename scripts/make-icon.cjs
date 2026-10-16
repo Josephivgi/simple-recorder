@@ -30,16 +30,39 @@ const PNG_SIZE = 256;
 // stored PNG-compressed, which every Windows since Vista reads.
 const ICO_BITMAP_MAX = 48;
 
-// Palette. Deep slate plate, white record ring, vivid red dot.
+// Palette. Deep slate plate, white "R" monogram, vivid red record dot.
 const PLATE_TOP = [58, 74, 107];
 const PLATE_BOTTOM = [26, 33, 48];
-const RING = [246, 248, 252, 0.94];
+const LETTER = [246, 248, 252, 0.97];
 const DOT_CORE = [232, 69, 60];
 const DOT_EDGE = [255, 118, 106];
 const PLATE_RADIUS = 0.22;
-const RING_RADIUS = 0.29;
-const RING_WIDTH = 0.062;
-const DOT_RADIUS = 0.175;
+
+// The monogram. All fractions of the icon box. The letter stands on a
+// geometric skeleton: a vertical stem, a half-annulus bowl closed by a
+// crossbar, and a kicked-out leg, every stroke the same weight so the R
+// stays crisp from 256px Explorer down to the 16px taskbar.
+const STROKE = 0.115; // letter stroke weight
+const LETTER_TOP = 0.21; // top of the stem and the bowl
+const LETTER_BOTTOM = 0.79; // foot of the stem and the leg
+const LETTER_LEFT = 0.235; // left edge of the stem
+// Bowl: a half ring centered on the stem's midline at mid-height, reaching
+// the letter's right edge. Its outer radius is set by the top of the letter,
+// so bowl and stem land on the same cap line.
+const BOWL_CENTER_X = LETTER_LEFT + STROKE / 2;
+const BOWL_CENTER_Y = (LETTER_TOP + LETTER_BOTTOM) / 2;
+const BOWL_OUTER = BOWL_CENTER_Y - LETTER_TOP;
+const BOWL_INNER = BOWL_OUTER - STROKE;
+const LETTER_RIGHT = BOWL_CENTER_X + BOWL_OUTER;
+// Leg: a diagonal stroke from the bowl's throat down past the stem's foot.
+const LEG_START_X = LETTER_LEFT + STROKE * 0.45;
+const LEG_START_Y = BOWL_CENTER_Y + STROKE * 0.3;
+const LEG_END_X = LETTER_RIGHT + 0.035;
+const LEG_END_Y = LETTER_BOTTOM;
+// Record dot: bottom-right, clear of the leg, lit from the top left.
+const DOT_X = 0.79;
+const DOT_Y = 0.775;
+const DOT_RADIUS = 0.095;
 
 function mix(a, b, t) {
   return [
@@ -73,31 +96,84 @@ function insideRoundedRect(x, y, w, h, r) {
   return dx * dx + dy * dy <= r * r;
 }
 
+// Signed distance helpers for the monogram, all in icon-box fractions:
+// negative inside the shape, positive outside. `sd` names distance to the
+// boundary; `cover` turns a distance into 0..1 alpha with a one-pixel
+// transition so supersampling starts from a smooth edge.
+
+// Distance to a rounded rectangle centered at (cx, cy), half extents
+// (hx, hy), corner radius r.
+function sdRoundedRect(x, y, cx, cy, hx, hy, r) {
+  const dx = Math.abs(x - cx) - (hx - r);
+  const dy = Math.abs(y - cy) - (hy - r);
+  const outside = Math.hypot(Math.max(dx, 0), Math.max(dy, 0));
+  return outside + Math.min(Math.max(dx, dy), 0) - r;
+}
+
+// Distance to a segment from (ax, ay) to (bx, by).
+function sdSegment(x, y, ax, ay, bx, by) {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const t = Math.min(1, Math.max(0, ((x - ax) * abx + (y - ay) * aby) / (abx * abx + aby * aby)));
+  return Math.hypot(x - (ax + abx * t), y - (ay + aby * t));
+}
+
+// Distance to the bowl: the right half of an annulus centered at
+// (BOWL_CENTER_X, BOWL_CENTER_Y). Points left of the center or below it are
+// simply far away; the stem and the crossbar own those regions.
+function sdBowl(x, y) {
+  if (x < BOWL_CENTER_X || y > BOWL_CENTER_Y) return 1;
+  return Math.abs(Math.hypot(x - BOWL_CENTER_X, y - BOWL_CENTER_Y) - (BOWL_OUTER + BOWL_INNER) / 2)
+    - (BOWL_OUTER - BOWL_INNER) / 2;
+}
+
+// A signed distance to the letter: the union of stem, bowl, crossbar, and
+// leg (the nearest of the four).
+function sdLetter(x, y) {
+  const stem = sdRoundedRect(
+    x, y,
+    LETTER_LEFT + STROKE / 2, (LETTER_TOP + LETTER_BOTTOM) / 2,
+    STROKE / 2, (LETTER_BOTTOM - LETTER_TOP) / 2,
+    STROKE / 2,
+  );
+  const bowl = sdBowl(x, y);
+  const bar = sdRoundedRect(
+    x, y,
+    (LETTER_LEFT + LETTER_RIGHT) / 2, BOWL_CENTER_Y,
+    (LETTER_RIGHT - LETTER_LEFT) / 2, STROKE / 2,
+    STROKE / 2,
+  );
+  const leg = sdSegment(x, y, LEG_START_X, LEG_START_Y, LEG_END_X, LEG_END_Y) - STROKE / 2;
+  return Math.min(stem, bowl, bar, leg);
+}
+
+function cover(sd, size) {
+  // One pixel of feather, expressed in icon-box fractions.
+  return Math.min(1, Math.max(0, 0.5 - sd * size));
+}
+
 // One supersampled sample at subpixel center (x, y) inside a `size` box.
+// The plate is checked in pixel coords; the monogram geometry is unit coords,
+// so the point is normalized first.
 function sample(x, y, size) {
+  const u = x / size;
+  const v = y / size;
   let px = [0, 0, 0, 0];
   const radius = PLATE_RADIUS * size;
   if (insideRoundedRect(x, y, size, size, radius)) {
-    const t = Math.min(1, Math.max(0, y / size));
+    const t = Math.min(1, Math.max(0, v));
     const plate = mix(PLATE_TOP, PLATE_BOTTOM, t);
     px = [plate[0], plate[1], plate[2], 1];
   }
-  const c = size / 2;
-  const d = Math.hypot(x - c, y - c);
-  const ringOuter = (RING_RADIUS + RING_WIDTH / 2) * size;
-  const ringInner = (RING_RADIUS - RING_WIDTH / 2) * size;
-  if (d <= ringOuter && d >= ringInner) {
-    // A soft 0.5px edge keeps the ring from looking chewed at 16px.
-    const edge = Math.min((ringOuter - d), (d - ringInner));
-    const cover = Math.min(1, Math.max(0, edge + 0.5));
-    px = over(px, [RING[0], RING[1], RING[2], RING[3] * cover]);
+  const letter = cover(sdLetter(u, v), size);
+  if (letter > 0) {
+    px = over(px, [LETTER[0], LETTER[1], LETTER[2], LETTER[3] * letter]);
   }
-  const dotR = DOT_RADIUS * size;
-  if (d <= dotR) {
-    const lit = Math.min(1, Math.max(0, 1 - (Math.hypot(x - c * 1.35, y - c * 1.35) / (dotR * 2.2))));
+  const dotD = Math.hypot(u - DOT_X, v - DOT_Y);
+  if (dotD <= DOT_RADIUS + 1 / size) {
+    const lit = Math.min(1, Math.max(0, 1 - (Math.hypot(u - DOT_X - DOT_RADIUS * 0.7, v - DOT_Y - DOT_RADIUS * 0.7) / (DOT_RADIUS * 2.2))));
     const dot = mix(DOT_CORE, DOT_EDGE, lit * 0.85);
-    const edge = Math.min(dotR - d + 0.5, 1);
-    px = over(px, [dot[0], dot[1], dot[2], Math.min(1, Math.max(0, edge))]);
+    px = over(px, [dot[0], dot[1], dot[2], cover(dotD - DOT_RADIUS, size)]);
   }
   return px;
 }

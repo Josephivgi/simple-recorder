@@ -26,8 +26,8 @@ pushes from the dev repo to the public repo on its own.
 
 ## Layout
 
-- `assets/icon.png`, `assets/icon.ico`: the app icon (a slate plate, a white
-  record ring, a red dot). Both files are generated, never hand-edited:
+- `assets/icon.png`, `assets/icon.ico`: the app icon (a slate plate, a bold
+  white R monogram, a red record dot). Both files are generated, never hand-edited:
   `npm run icon` redraws them from `scripts/make-icon.cjs`, which computes
   the pixels, supersamples them for smooth edges, and encodes PNG and ICO
   itself (the .ico carries 16/24/32/48/64/128/256, bitmaps up to 48 and
