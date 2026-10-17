@@ -944,6 +944,10 @@ crop is set) sits under it. */
   cursor: pointer;
 }
 
+.take-image {
+  object-fit: contain;
+}
+
 .take-body {
   padding: 8px 10px 10px;
   display: flex;

@@ -30,6 +30,7 @@ const { trackWindow, registerOn, shutdownRegistry } = require("../lib/main-ipc-r
 const { frameLooksBlank } = require("../lib/paint-check");
 const { issueUrl, osLabel } = require("../lib/issue-report");
 const { normalizeTheme, themeSource, themeBackground } = require("../lib/themes");
+const { nextScreenshotName, cropPixelRect, isScreenshot } = require("../lib/screenshot.cjs");
 
 const disposers = [];
 
@@ -337,7 +338,7 @@ function displayWorkArea(bounds) {
 const COUNTDOWN_OVERLAY_WIDTH = 208;
 const COUNTDOWN_OVERLAY_HEIGHT = 92;
 const COUNTDOWN_WAIT_WIDTH = 240;
-const COUNTDOWN_RECORD_WIDTH = 288;
+const COUNTDOWN_RECORD_WIDTH = 332;
 const COUNTDOWN_WAIT_HEIGHT = 108;
 const COUNTDOWN_BAR_HEIGHT = 52;
 const BAR_MIN_WIDTH = 640;
@@ -2165,15 +2166,18 @@ ipcMain.handle("take-delete", async (event, payload) => {
   const take = db.getTake(id);
   if (!take) return { ok: false, takes: takesForPage() };
   const win = BrowserWindow.fromWebContents(event.sender);
+  const isShot = isScreenshot(take);
   const box = {
     type: "question",
     buttons: ["Delete", "Cancel"],
     defaultId: 1,
     cancelId: 1,
     noLink: true,
-    title: "Delete take",
+    title: isShot ? "Delete screenshot" : "Delete take",
     message: 'Delete "' + take.name + '"?',
-    detail: "The video file is removed from the recordings folder.",
+    detail: isShot
+      ? "The image file is removed from the recordings folder."
+      : "The video file is removed from the recordings folder.",
   };
   const result =
     win && !win.isDestroyed() && win.isVisible()
@@ -2209,6 +2213,83 @@ ipcMain.handle("take-open", async (_event, payload) => {
     return { ok: !err, error: err || "" };
   }
   return { ok: false };
+});
+
+// Screenshots: one PNG of the screen a take would record, with the same crop,
+// saved next to the takes in today's folder and listed with them. The app's
+// own window is kept out of the picture by excluding it from capture for the
+// moment of the grab (the bar and its strips are always excluded), so nothing
+// on screen hides or flickers.
+const SCREENSHOT_SETTLE_MS = 120;
+let screenshotInflight = null;
+
+async function saveScreenshot(display, crop, from) {
+  if (!db || !mediaCapture) return { ok: false, error: "The recorder is still starting." };
+  const shielded = [];
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || isCountdownOverlay(win) || !win.isVisible()) continue;
+    try {
+      win.setContentProtection(true);
+      shielded.push(win);
+    } catch (_) {}
+  }
+  let image = null;
+  try {
+    if (shielded.length) await new Promise((resolve) => setTimeout(resolve, SCREENSHOT_SETTLE_MS));
+    image = await mediaCapture.captureDisplayImage(display);
+  } catch (error) {
+    logRecorder("screenshot capture failed", (error && error.message) || error);
+  } finally {
+    for (const win of shielded) {
+      try {
+        if (!win.isDestroyed()) win.setContentProtection(false);
+      } catch (_) {}
+    }
+  }
+  if (!image) return { ok: false, error: "Could not capture the screen." };
+  const rect = cropPixelRect(image.getSize(), crop);
+  const size = image.getSize();
+  const shot = rect.width === size.width && rect.height === size.height ? image : image.crop(rect);
+  const png = shot.toPNG();
+  if (!png || !png.length) return { ok: false, error: "The screen capture came back empty." };
+  const dir = await takeDayDir(new Date());
+  const dest = await uniqueTakePath(dir, nextScreenshotName(db.listTakes(200)), ".png");
+  if (!dest) return { ok: false, error: "Could not name the screenshot." };
+  await fs.writeFile(dest, png);
+  const take = {
+    id: randomUUID(),
+    name: path.basename(dest, ".png"),
+    path: dest,
+    mime: "image/png",
+    size: png.length,
+    durationMs: 0,
+    partial: false,
+    createdAt: new Date().toISOString(),
+  };
+  db.insertTake(take);
+  logRecorder("screenshot saved", take.name + " " + rect.width + "x" + rect.height + " " + from);
+  return { ok: true, take: withDayFolders([take])[0], takes: takesForPage() };
+}
+
+function takeScreenshot(display, crop, from) {
+  if (screenshotInflight) return screenshotInflight;
+  screenshotInflight = saveScreenshot(display, crop, from)
+    .catch((error) => {
+      logRecorder("screenshot failed", (error && error.message) || error);
+      return { ok: false, error: "Could not save the screenshot." };
+    })
+    .finally(() => {
+      screenshotInflight = null;
+    });
+  return screenshotInflight;
+}
+
+// Studio > Screenshot. The page says what its Source box shows: the whole
+// screen, or a crop on the display it was drawn on.
+ipcMain.handle("screenshot-take", async (_event, payload) => {
+  const crop = payload && payload.crop && typeof payload.crop === "object" ? payload.crop : null;
+  const display = (crop && displayById(payload.displayId)) || displayForCountdown();
+  return takeScreenshot(display, crop, "studio");
 });
 
 // Settings > Theme. Saved in SQLite; main reads it before the window opens
@@ -2504,6 +2585,20 @@ ipcMain.on("overlay-nudge-fps", (event, payload) => {
   if (countdownSender && !countdownSender.isDestroyed()) {
     countdownSender.send("overlay-nudge-fps", payload || {});
   }
+});
+
+// The bar's Screenshot button grabs what the take records right now: the
+// bar's screen, cropped to its Area or Window pick. The page that owns the
+// session is told, so its Takes list and a toast follow.
+ipcMain.on("overlay-screenshot", async (event) => {
+  if (!isOverlaySender(event.sender)) return;
+  logRecorder("press screenshot", barStateText());
+  const crop = countdownTarget === "area" && countdownSizeCrop ? countdownSizeCrop : null;
+  const result = await takeScreenshot(displayForCountdown(), crop, "bar");
+  if (countdownOverlay && !countdownOverlay.isDestroyed()) {
+    countdownOverlay.webContents.send("overlay-screenshot-done", { ok: Boolean(result && result.ok) });
+  }
+  if (countdownSender && !countdownSender.isDestroyed()) countdownSender.send("screenshot-saved", result);
 });
 
 ipcMain.on("overlay-toggle-sound", (event) => {

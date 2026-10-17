@@ -336,6 +336,39 @@ button.record-bar-go:disabled {
   }
 }
 
+/* Screenshot: an icon button, lit for a moment once the picture is saved. */
+
+.record-bar-shot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: var(--rc-stage-well, color-mix(in oklch, var(--on-stage) 10%, transparent));
+  color: var(--stage-muted);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.record-bar-shot[data-state="busy"] {
+  opacity: 0.6;
+}
+
+.record-bar-shot[data-state="saved"] {
+  background: var(--stage-press);
+  color: var(--on-stage);
+}
+
+@media (hover: hover) {
+  .record-bar-shot:hover {
+    color: var(--on-stage);
+  }
+}
+
 /* Clock, stop, close. The trailing cluster. */
 
 .record-bar-clock {
@@ -518,6 +551,7 @@ button.record-bar-pause[aria-pressed="true"] .pause-bars {
 .countdown-card[data-mode="wait"] .record-bar-field,
 .countdown-card[data-mode="wait"] .record-bar-target,
 .countdown-card[data-mode="wait"] .record-bar-sound,
+.countdown-card[data-mode="wait"] .record-bar-shot,
 .countdown-card[data-mode="recording"] .record-bar-field,
 .countdown-card[data-mode="recording"] .record-bar-target,
 .countdown-card[data-mode="recording"] .record-bar-sound,

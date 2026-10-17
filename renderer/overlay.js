@@ -302,6 +302,25 @@
   bind("[data-overlay-fps-up]", () => call("nudgeFps", 1));
   bind("[data-overlay-sound]", () => call("toggleSound"));
 
+  // Screenshot: main grabs and saves it; the button shows busy, then saved.
+  let shotTimer = 0;
+  function shotState(state) {
+    const btn = document.querySelector("[data-overlay-shot]");
+    if (!btn) return;
+    if (state) btn.setAttribute("data-state", state);
+    else btn.removeAttribute("data-state");
+    btn.setAttribute(
+      "aria-label",
+      state === "saved" ? "Screenshot saved" : state === "failed" ? "Screenshot failed" : "Take a screenshot",
+    );
+  }
+  bind("[data-overlay-shot]", (event) => {
+    if (event.currentTarget.getAttribute("data-state") === "busy") return;
+    clearTimeout(shotTimer);
+    shotState("busy");
+    call("screenshot");
+  });
+
   // The card can sit over game HUD or other screen content during a take.
   // Dragging any non-button area moves the window; buttons stay buttons.
   const card = document.querySelector(".countdown-card");
@@ -338,4 +357,11 @@
 
   const api = overlayApi();
   if (api && typeof api.onState === "function") api.onState(paint);
+  if (api && typeof api.onScreenshotDone === "function") {
+    api.onScreenshotDone((result) => {
+      shotState(result.ok ? "saved" : "failed");
+      clearTimeout(shotTimer);
+      shotTimer = setTimeout(() => shotState(""), 1400);
+    });
+  }
 })();

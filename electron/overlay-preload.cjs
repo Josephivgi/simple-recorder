@@ -12,6 +12,12 @@ contextBridge.exposeInMainWorld("overlay", {
   nudgeDelay: (dir) => ipcRenderer.send("overlay-nudge-delay", { dir }),
   nudgeFps: (dir) => ipcRenderer.send("overlay-nudge-fps", { dir }),
   toggleSound: () => ipcRenderer.send("overlay-toggle-sound"),
+  screenshot: () => ipcRenderer.send("overlay-screenshot"),
+  onScreenshotDone: (handler) => {
+    const listen = (_event, payload) => handler(payload || {});
+    ipcRenderer.on("overlay-screenshot-done", listen);
+    return () => ipcRenderer.removeListener("overlay-screenshot-done", listen);
+  },
   dragBy: (payload) => ipcRenderer.send("overlay-drag-by", payload || {}),
   onState: (handler) => {
     const listen = (_event, state) => handler(state);

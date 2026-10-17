@@ -2194,6 +2194,7 @@ function createPicker(root, opts) {
 // ---------------------------------------------------------------------------
 
 const studio = {
+  shooting: false,
   micPicker: null,
   sourceKey: "",
   targetsAt: 0,
@@ -2488,6 +2489,11 @@ function paintSource() {
     }
     const clear = tools.querySelector("[data-source-clear]");
     if (clear) clear.hidden = !(session.target === "area" && session.areaCrop);
+    const shot = tools.querySelector("[data-source-shot]");
+    if (shot) {
+      shot.disabled = Boolean(studio.shooting || session.areaPicking || isBusy());
+      shot.textContent = studio.shooting ? "Saving…" : "Screenshot";
+    }
   }
   const key = JSON.stringify([
     studio.targetsAt,
@@ -2794,6 +2800,7 @@ function wireStudio() {
     studio.micPicker = createPicker(micHolder, { labelledBy: "mic-input-label", onChange: onMicDevice });
   }
   document.querySelector("[data-update-download]")?.addEventListener("click", () => void onUpdateDownload());
+  if (api && typeof api.onScreenshotSaved === "function") api.onScreenshotSaved(onScreenshotSaved);
   if (api && typeof api.onUpdateState === "function") {
     api.onUpdateState((state) => {
       if (!state) return;
@@ -2810,6 +2817,7 @@ function wireStudio() {
     if (el.closest("[data-source-full]")) return selectScreen();
     if (el.closest("[data-source-draw]")) return void drawArea();
     if (el.closest("[data-source-clear]")) return clearCrop();
+    if (el.closest("[data-source-shot]")) return void takeStudioScreenshot();
   });
   document.querySelector("[data-source-body]")?.addEventListener("click", (event) => {
     const el = event.target;
@@ -2913,6 +2921,40 @@ function wireStudio() {
   }
 }
 
+// Studio > Screenshot: a picture of what the Source box says a take records,
+// the whole screen or the crop. Main keeps this window out of the picture.
+async function takeStudioScreenshot() {
+  if (studio.shooting || isBusy() || !api || typeof api.screenshotTake !== "function") return;
+  studio.shooting = true;
+  paintSource();
+  const crop = session.target === "area" && session.areaCrop ? session.areaCrop : null;
+  let result = null;
+  try {
+    result = await api.screenshotTake({ crop, displayId: crop ? String(session.areaDisplayId || "") : "" });
+  } catch {
+    result = { ok: false, error: "Could not save the screenshot." };
+  }
+  studio.shooting = false;
+  paintSource();
+  onScreenshotSaved(result);
+}
+
+function onScreenshotSaved(result) {
+  if (result && Array.isArray(result.takes)) session.takes = result.takes;
+  if (result && result.ok && result.take && result.take.id) {
+    session.justSavedId = result.take.id;
+    logRecorderEvent("screenshot saved", result.take.name || "");
+    toast("Screenshot saved.");
+  } else {
+    toast((result && result.error) || "Could not save the screenshot.", true);
+  }
+  paintTakes();
+}
+
+function isScreenshotTake(take) {
+  return String((take && take.mime) || "").startsWith("image/");
+}
+
 function takeVideoUrl(take) {
   return "take://file/" + encodeURIComponent(take.path);
 }
@@ -2967,7 +3009,9 @@ function takeCards(takes) {
       const deleting = take.id === session.deletingId;
       return (
         '<div class="take-card' + (isNew ? " is-new" : "") + '" data-take="' + esc(take.id) + '"' + (deleting ? " aria-busy=\"true\"" : "") + ">" +
-        '<video class="take-video"' + (deleting ? "" : ' src="' + esc(takeVideoUrl(take)) + '"') + ' preload="metadata" muted playsinline></video>' +
+        (isScreenshotTake(take)
+          ? '<img class="take-video take-image" alt=""' + (deleting ? "" : ' src="' + esc(takeVideoUrl(take)) + '"') + ' data-take-open="' + esc(take.id) + '" />'
+          : '<video class="take-video"' + (deleting ? "" : ' src="' + esc(takeVideoUrl(take)) + '"') + ' preload="metadata" muted playsinline></video>') +
         '<div class="take-body">' +
         '<span class="take-name">' + esc(take.name || "Take") + (isNew ? '<span class="take-new-badge">New</span>' : "") + "</span>" +
         '<span class="take-meta">' + esc(takeMeta(take)) + "</span>" +
@@ -2988,12 +3032,19 @@ function paintTakes() {
   if (!grid) return;
   const takes = Array.isArray(session.takes) ? session.takes : [];
   if (!takes.length) {
-    grid.innerHTML = '<p class="takes-empty">No takes yet. Record one from Studio, and it shows up here.</p>';
+    grid.innerHTML = '<p class="takes-empty">No takes yet. Record one or take a screenshot from Studio, and it shows up here.</p>';
     return;
   }
   grid.innerHTML = takeGroups(takes)
     .map((group) => {
-      const count = group.takes.length + (group.takes.length === 1 ? " take" : " takes");
+      const shots = group.takes.filter(isScreenshotTake).length;
+      const videos = group.takes.length - shots;
+      const count = [
+        videos ? videos + (videos === 1 ? " take" : " takes") : "",
+        shots ? shots + (shots === 1 ? " screenshot" : " screenshots") : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
       return (
         '<section class="take-group" data-take-day="' + esc(group.day) + '">' +
         '<h3 class="take-group-head">' +

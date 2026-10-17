@@ -1179,3 +1179,49 @@ test("the theme survives a restart", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("release notes come from CHANGELOG.md and must say what changed", () => {
+  const { changelogSection, addChangelogSection, notesProblem } = require("../scripts/changelog.cjs");
+  const notes = "### New\n- Settings > Theme with eight color themes.";
+  const first = addChangelogSection("", "v1.2.7", "2026-10-17", notes);
+  assert.ok(first.startsWith("# Changelog\n\n## v1.2.7 (2026-10-17)\n"));
+  const second = addChangelogSection(first, "v1.2.8", "2026-10-20", "### Fixed\n- The crop preview no longer flickers.");
+  // Newest on top, older sections kept as they were.
+  assert.ok(second.indexOf("## v1.2.8") < second.indexOf("## v1.2.7"));
+  assert.equal(changelogSection(second, "v1.2.7"), notes);
+  assert.equal(changelogSection(second, "v1.2.8"), "### Fixed\n- The crop preview no longer flickers.");
+  assert.equal(changelogSection(second, "v1.2.9"), "");
+  assert.throws(() => addChangelogSection(second, "v1.2.8", "2026-10-21", notes), /already has a section/);
+  // Pipeline boilerplate is not a changelog.
+  assert.match(notesProblem(""), /empty/);
+  assert.match(notesProblem("Simple Recorder v1.2.7. Passed the release security gate (gitleaks, unit tests)."), /Say what changed/);
+  assert.equal(notesProblem(notes), "");
+  // The workflow publishes that section; the old boilerplate line is gone.
+  const workflow = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "release.yml"), "utf8");
+  assert.match(workflow, /node scripts\/changelog\.cjs section "\$TAG" CHANGELOG\.md/);
+  assert.match(workflow, /--notes-file "\$NOTES_FILE"/);
+  assert.ok(!workflow.includes("Passed the release security gate"));
+});
+
+test("screenshot: names count up past the highest one and skip takes", () => {
+  const { nextScreenshotName, isScreenshot } = require("../lib/screenshot.cjs");
+  assert.equal(nextScreenshotName([]), "Screenshot 1");
+  assert.equal(
+    nextScreenshotName([{ name: "Screenshot 2" }, { name: "Screen take 9" }, { name: "Screenshot 5 2" }]),
+    "Screenshot 6",
+  );
+  assert.equal(isScreenshot({ mime: "image/png" }), true);
+  assert.equal(isScreenshot({ mime: "video/mp4" }), false);
+});
+
+test("screenshot: a crop maps to a pixel rect inside the image", () => {
+  const { cropPixelRect } = require("../lib/screenshot.cjs");
+  const size = { width: 2560, height: 1440 };
+  assert.deepEqual(cropPixelRect(size, null), { x: 0, y: 0, width: 2560, height: 1440 });
+  assert.deepEqual(cropPixelRect(size, { x: 0.25, y: 0.5, w: 0.5, h: 0.25 }), { x: 640, y: 720, width: 1280, height: 360 });
+  // A crop running off the edge is clipped to the image.
+  assert.deepEqual(cropPixelRect(size, { x: 0.9, y: 0.9, w: 0.5, h: 0.5 }), { x: 2304, y: 1296, width: 256, height: 144 });
+  // A crop that misses the image, or a bad one, is the whole screen.
+  assert.deepEqual(cropPixelRect(size, { x: 2, y: 2, w: 0.5, h: 0.5 }), { x: 0, y: 0, width: 2560, height: 1440 });
+  assert.deepEqual(cropPixelRect(size, { x: 0, y: 0, w: 0, h: 1 }), { x: 0, y: 0, width: 2560, height: 1440 });
+});

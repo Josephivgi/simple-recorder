@@ -49,6 +49,16 @@ pushes from the dev repo to the public repo on its own.
   root, the `yyyy-mm-dd` day folders, take-name bumps, and the idempotent
   migration that moves a loose take into its day folder (move, verify, then
   let the caller re-point the row; never deletes).
+- `lib/screenshot.cjs`: screenshot naming (`Screenshot N`) and the crop to
+  pixel-rect math. The capture lives in main (`saveScreenshot`): Studio's
+  Screenshot button (`screenshot-take`) and the bar's camera button
+  (`overlay-screenshot`, shown in setup and while recording) both grab one
+  full-resolution frame of the take's screen through desktopCapturer, crop it
+  the way the take is cropped, and write a PNG into today's day folder. The
+  row goes in `takes` with `mime` `image/png`, so the Takes page lists it
+  with the videos (an image card; Open shows it in the default viewer). The
+  main window is excluded from capture (`setContentProtection`) for the grab
+  instead of hidden, so nothing flickers; the bar and strips already are.
 - `lib/window-rect.cjs`: Win32 window rect by title (async PowerShell,
   EnumWindows + GetWindowRect), the bridge from a desktopCapturer name to
   a screen-space crop.
@@ -192,7 +202,8 @@ pushes from the dev repo to the public repo on its own.
   clear it.
 - `npm run gate`: the security gate over the working tree and its history.
 - `npm run icon`: redraw `assets/icon.png` and `assets/icon.ico`.
-- `npm run promote`: promote HEAD to the public repo as its dev release version.
+- `npm run promote -- --notes <file>`: promote HEAD to the public repo as its
+  dev release version, with that file as the release's changelog.
 - `npm run app:install`: install the app for the current user (see above).
 - `npm run app:verify`: verify an installed app and boot it hidden.
 - `npm run app:uninstall`: remove the installed app.
@@ -299,6 +310,15 @@ be newer than the public repo's latest release. `--replace-history` (used once,
 for the v1.2.0 cutover) force-pushes a single fresh commit and refuses to run
 while the public repo still has tags, because old tags keep old history
 reachable and fail the author check on every later release.
+
+Release notes are a real changelog, never "passed the gate". `npm run promote
+-- --notes <file>` is required: a Markdown file that says what changed for
+users (### New / ### Improved / ### Fixed). Promote adds it as the
+`## v<x.y.z> (date)` section at the top of `CHANGELOG.md`, which exists only
+in the public repo and keeps every earlier section. The public workflow
+publishes that section as the release notes (`scripts/changelog.cjs`) and
+fails the release when the section is missing or only says the checks
+passed. Dev builds keep a fixed "Developer build" note.
 
 Assets are `simple-recorder-<tag>-app.tar.gz` (the update payload the in-app
 updater swaps into `resources\app`), `latest.json`, and

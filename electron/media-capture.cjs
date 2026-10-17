@@ -891,6 +891,27 @@ function attachMediaCapture(host) {
     windowScreenCrop(name) {
       return windowScreenCrop(name);
     },
+    // One full-resolution image of a display, for screenshots. The thumbnail
+    // is asked for at the display's physical pixel size, so nothing is scaled.
+    async captureDisplayImage(display) {
+      const scale = Number(display && display.scaleFactor) || 1;
+      const size = {
+        width: Math.round(((display && display.size && display.size.width) || 1920) * scale),
+        height: Math.round(((display && display.size && display.size.height) || 1080) * scale),
+      };
+      const sources = await captureSourcesTimeout(
+        desktopCapturer.getSources({ types: ["screen"], thumbnailSize: size, fetchWindowIcons: false }),
+      );
+      const screens = (Array.isArray(sources) ? sources : [])
+        .filter(keepCaptureSource)
+        .filter((item) => String(item.id).startsWith("screen:"));
+      if (!screens.length) return null;
+      const displays = screen.getAllDisplays();
+      const wanted = display ? String(display.id) : "";
+      const pick = screens.find((item) => sourceDisplayId(item, screens, displays) === wanted) || screens[0];
+      const image = pick && pick.thumbnail;
+      return image && !image.isEmpty() ? image : null;
+    },
     getLastDenied() {
       return { mic: lastDenied.mic };
     },

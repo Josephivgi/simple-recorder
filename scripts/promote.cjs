@@ -2,12 +2,17 @@
 
 // Promote a dev commit to the public repo. The only way code reaches users.
 //
-//   node scripts/promote.cjs                             use the dev release version of HEAD
+//   node scripts/promote.cjs --notes notes.md            use the dev release version of HEAD
 //   node scripts/promote.cjs --version 1.2.1             gate, commit, tag, push
 //   node scripts/promote.cjs --version 1.2.1 --dry-run   stop before pushing
 //   node scripts/promote.cjs --version 1.2.0 --replace-history
 //        one-time cutover: the public repo's main becomes a single fresh commit
 //        (force push). Old public history stays in the private dev repo.
+//
+// --notes is required: a Markdown file saying what changed for users (New /
+// Improved / Fixed). It becomes this version's section at the top of the
+// public CHANGELOG.md, which the public workflow publishes as the release
+// notes (scripts/changelog.cjs).
 //
 // Steps: HEAD must be committed and pushed to the dev repo. Its tracked files
 // (minus security/) are exported, the version is stamped into package.json,
@@ -23,6 +28,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const { normalizeVersion, formatTag, compareVersions, unpackTarGz } = require("../lib/updater");
 const { runGate } = require("./security-gate.cjs");
+const { addChangelogSection, notesProblem } = require("./changelog.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const PUBLIC_REPO = "Josephivgi/simple-recorder";
@@ -32,11 +38,12 @@ const NOREPLY_EMAIL = "Josephivgi@users.noreply.github.com";
 const PRIVATE_DIRS = new Set(["security"]);
 
 function parseArgs(argv) {
-  const out = { version: "", dryRun: false, replaceHistory: false, publicRepo: PUBLIC_REPO };
+  const out = { version: "", notesFile: "", dryRun: false, replaceHistory: false, publicRepo: PUBLIC_REPO };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--version" && argv[i + 1]) out.version = normalizeVersion(argv[++i]);
     else if (arg === "--public-repo" && argv[i + 1]) out.publicRepo = argv[++i];
+    else if (arg === "--notes" && argv[i + 1]) out.notesFile = argv[++i];
     else if (arg === "--dry-run") out.dryRun = true;
     else if (arg === "--replace-history") out.replaceHistory = true;
   }
@@ -125,6 +132,10 @@ function devVersionFor(head) {
 function promote(args) {
   const denylist = path.join(ROOT, "security", "private-denylist.txt");
 
+  if (!args.notesFile) fail("Pass --notes <file>: what changed for users in this release. It becomes the release notes.");
+  args.notes = fs.readFileSync(path.resolve(args.notesFile), "utf8");
+  const notesIssue = notesProblem(args.notes);
+  if (notesIssue) fail(notesIssue);
   if (git(ROOT, ["status", "--porcelain"]).trim()) fail("The dev checkout has uncommitted changes. Commit them first.");
   const head = git(ROOT, ["rev-parse", "HEAD"]).trim();
   git(ROOT, ["fetch", "--quiet", "origin", "main"]);
@@ -193,8 +204,14 @@ function promoteIn(work, args, tag, denylist, head) {
     // A fresh history only carries the new commit and tag.
     for (const old of git(cloneDir, ["tag", "--list"]).split(/\r?\n/).filter(Boolean)) git(cloneDir, ["tag", "-d", old]);
   }
+  // The changelog lives only in the public repo: carry its history over the
+  // fresh tree and put this release on top.
+  const changelogFile = path.join(cloneDir, "CHANGELOG.md");
+  const changelog = fs.existsSync(changelogFile) ? fs.readFileSync(changelogFile, "utf8") : "";
   emptyWorkTree(cloneDir);
   copyTree(exportDir, cloneDir);
+  const today = new Date().toISOString().slice(0, 10);
+  fs.writeFileSync(changelogFile, addChangelogSection(changelog, tag, today, args.notes), "utf8");
   git(cloneDir, ["add", "-A"]);
   git(cloneDir, ["commit", "--quiet", "-m", "Simple Recorder " + tag], { env });
   git(cloneDir, ["tag", tag], { env });

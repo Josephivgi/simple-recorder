@@ -179,6 +179,22 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=${tag}\n`);
           EOF
 
+      # Public releases publish the version's CHANGELOG.md section, written by
+      # `npm run promote -- --notes`. No section means no release: the notes
+      # have to say what changed for users.
+      - name: Release notes
+        id: notes
+        shell: bash
+        env:
+          TAG: ${{ steps.pack.outputs.tag }}
+        run: |
+          if [ "$GITHUB_REPOSITORY" = "$DEV_REPO" ]; then
+            echo "Developer build from the private development repo. Not a public release." > "$RUNNER_TEMP/notes.md"
+          else
+            node scripts/changelog.cjs section "$TAG" CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          fi
+          echo "file=$RUNNER_TEMP/notes.md" >> "$GITHUB_OUTPUT"
+
       - name: Gate the built bundle
         shell: bash
         env:
@@ -193,17 +209,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.pack.outputs.tag }}
           TARGET_SHA: ${{ github.sha }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
         run: |
           ASSET="dist-app/simple-recorder-${TAG}-app.tar.gz"
           MANIFEST="dist-app/latest.json"
           # Fixed name, so releases/latest/download/SimpleRecorder-Setup.exe
           # is a permanent link to the newest Windows build.
           SETUP="dist-app/SimpleRecorder-Setup.exe"
-          if [ "$GITHUB_REPOSITORY" = "$DEV_REPO" ]; then
-            NOTES="Developer build from the private development repo. Not a public release."
-          else
-            NOTES="Simple Recorder ${TAG}. Passed the release security gate (gitleaks, personal info scan, npm audit, unit tests, bundle scan)."
-          fi
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ASSET" "$MANIFEST" "$SETUP" -R "$GITHUB_REPOSITORY" --clobber
           else
@@ -211,5 +223,5 @@ jobs:
               -R "$GITHUB_REPOSITORY" \
               --target "$TARGET_SHA" \
               --title "Simple Recorder ${TAG}" \
-              --notes "$NOTES"
+              --notes-file "$NOTES_FILE"
           fi

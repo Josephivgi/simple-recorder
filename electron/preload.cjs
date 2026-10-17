@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld("rec", {
   takeDelete: (id) => ipcRenderer.invoke("take-delete", { id }),
   takeShow: (id) => ipcRenderer.invoke("take-show", { id }),
   takeOpen: (id) => ipcRenderer.invoke("take-open", { id }),
+  screenshotTake: (payload) => ipcRenderer.invoke("screenshot-take", payload || {}),
+  onScreenshotSaved: (handler) => {
+    const listen = (_event, payload) => handler(payload);
+    ipcRenderer.on("screenshot-saved", listen);
+    return () => ipcRenderer.removeListener("screenshot-saved", listen);
+  },
   recordingsOpen: () => ipcRenderer.invoke("recordings-open"),
   reportIssue: (kind) => ipcRenderer.invoke("issue-report-open", { kind }),
   themeGet: () => ipcRenderer.invoke("theme-get"),
