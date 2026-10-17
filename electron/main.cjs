@@ -8,6 +8,7 @@ const {
   screen,
   shell,
   globalShortcut,
+  nativeTheme,
 } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
@@ -28,6 +29,7 @@ const {
 const { trackWindow, registerOn, shutdownRegistry } = require("../lib/main-ipc-registry.cjs");
 const { frameLooksBlank } = require("../lib/paint-check");
 const { issueUrl, osLabel } = require("../lib/issue-report");
+const { normalizeTheme, themeSource, themeBackground } = require("../lib/themes");
 
 const disposers = [];
 
@@ -1700,7 +1702,7 @@ function createWindow() {
     minHeight: Math.min(520, height),
     maxWidth: work.width,
     maxHeight: work.height,
-    backgroundColor: "#f4f6f8",
+    backgroundColor: themeBackground(applySavedTheme(), nativeTheme.shouldUseDarkColors),
     title: "Simple Recorder",
     show: false,
     ...(icon ? { icon } : {}),
@@ -1731,8 +1733,10 @@ function createWindow() {
     if (win.isDestroyed()) return;
     // ?smoke=1 only in a smoke run: it is what installs the page's
     // crop-preview probe, and a normal launch carries no debug hook.
-    const opts = SMOKE ? { query: { smoke: "1" } } : undefined;
-    win.loadFile(indexFile, opts).catch((error) => logCrash("loadApp loadFile", (error && (error.stack || error.message)) || error));
+    // ?theme= lets the page paint in its theme before any IPC is up.
+    const query = { theme: savedTheme() };
+    if (SMOKE) query.smoke = "1";
+    win.loadFile(indexFile, { query }).catch((error) => logCrash("loadApp loadFile", (error && (error.stack || error.message)) || error));
   };
   win.webContents.on("render-process-gone", (_event, details) => {
     if (!details || details.reason === "clean-exit") return;
@@ -1844,6 +1848,8 @@ async function runSmoke(win) {
             " updateSummary: Boolean(document.querySelector('[data-update-summary]'))," +
             " defaultQuality: (document.querySelector('[data-page-panel=\"settings\"] [data-quality][aria-checked=\"true\"]') || {}).textContent || ''," +
             " reportButtons: document.querySelectorAll('[data-report]').length," +
+            " theme: document.documentElement.dataset.theme || ''," +
+            " themeOptions: document.querySelectorAll('[data-theme-option]').length," +
             " dock: (document.querySelector('[data-dock-summary]') || {}).textContent || '' }))",
         )
         .catch((error) => ({ error: String((error && error.message) || error) })),
@@ -2203,6 +2209,31 @@ ipcMain.handle("take-open", async (_event, payload) => {
     return { ok: !err, error: err || "" };
   }
   return { ok: false };
+});
+
+// Settings > Theme. Saved in SQLite; main reads it before the window opens
+// so the window background, the Windows title bar, and the page's first
+// paint all start in the theme.
+function savedTheme() {
+  return normalizeTheme(db ? db.kvGet("appTheme", "") : "");
+}
+
+function applySavedTheme() {
+  const theme = savedTheme();
+  nativeTheme.themeSource = themeSource(theme);
+  return theme;
+}
+
+ipcMain.handle("theme-get", () => ({ theme: savedTheme() }));
+
+ipcMain.handle("theme-set", (event, payload) => {
+  const theme = normalizeTheme(payload && payload.theme);
+  if (db) db.kvSet("appTheme", theme);
+  nativeTheme.themeSource = themeSource(theme);
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && !win.isDestroyed()) win.setBackgroundColor(themeBackground(theme, nativeTheme.shouldUseDarkColors));
+  logRecorder("theme set", theme);
+  return { ok: true, theme };
 });
 
 // Settings > Report a problem. The URL is built here, never taken from the

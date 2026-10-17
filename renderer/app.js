@@ -3095,6 +3095,60 @@ async function refreshTakes() {
   paintTakes();
 }
 
+// ---------------------------------------------------------------------------
+// Theme (Settings > Theme)
+//
+// theme-boot.js already set <html data-theme> from main's ?theme= before the
+// first paint. This keeps it current: a pick here, or Windows switching
+// between light and dark while Match Windows is on.
+// ---------------------------------------------------------------------------
+
+const THEME_LABELS = {
+  system: "Match Windows",
+  light: "Light",
+  dark: "Dark",
+  midnight: "Midnight",
+  ocean: "Ocean",
+  forest: "Forest",
+  violet: "Violet",
+  sunset: "Sunset",
+};
+const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+
+function applyTheme(choice) {
+  const theme = THEME_LABELS[choice] ? choice : "light";
+  const root = document.documentElement;
+  root.dataset.themeChoice = theme;
+  root.dataset.theme = theme === "system" ? (systemDark.matches ? "dark" : "light") : theme;
+  document.querySelectorAll("[data-theme-option]").forEach((btn) => {
+    btn.setAttribute("aria-checked", String(btn.getAttribute("data-theme-option") === theme));
+  });
+  const note = document.querySelector("[data-theme-summary]");
+  if (note) {
+    note.textContent =
+      theme === "system"
+        ? "Follows Windows: " + (systemDark.matches ? "dark" : "light") + " right now."
+        : THEME_LABELS[theme] + ".";
+  }
+}
+
+function wireTheme() {
+  applyTheme(document.documentElement.dataset.themeChoice);
+  document.querySelector("[data-theme-group]")?.addEventListener("click", async (event) => {
+    const btn = event.target.closest("[data-theme-option]");
+    if (!btn) return;
+    const previous = document.documentElement.dataset.themeChoice;
+    const choice = btn.getAttribute("data-theme-option");
+    applyTheme(choice);
+    const res = await api.themeSet(choice).catch(() => null);
+    if (!res || !res.ok) {
+      applyTheme(previous);
+      toast("Could not save the theme.", true);
+    }
+  });
+  systemDark.addEventListener("change", () => applyTheme(document.documentElement.dataset.themeChoice));
+}
+
 async function boot() {
   if (!api) {
     const actions = document.querySelector("[data-dock-actions]");
@@ -3102,6 +3156,7 @@ async function boot() {
     return;
   }
   wireStudio();
+  wireTheme();
   render();
   wireTakes();
   document.querySelector("[data-open-folder]")?.addEventListener("click", () => {

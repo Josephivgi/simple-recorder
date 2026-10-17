@@ -9,6 +9,8 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Simple Recorder</title>
     <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="themes.css" />
+    <script src="theme-boot.js"></script>
   </head>
   <body>
     <div class="shell">
@@ -189,6 +191,49 @@
                 <button type="button" role="radio" data-quality="1440p" aria-checked="false"><strong>1440p</strong></button>
               </div>
               <p class="panel-note">Simple Recorder opens with this quality. The Quality box in the studio changes the same setting.</p>
+            </section>
+            <section class="panel panel-theme" aria-labelledby="theme-title">
+              <header class="panel-head">
+                <div class="panel-title">
+                  <h2 id="theme-title">Theme</h2>
+                  <p class="panel-sub" data-theme-summary>Light.</p>
+                </div>
+              </header>
+              <div class="theme-grid" role="radiogroup" aria-labelledby="theme-title" data-theme-group>
+                <button type="button" role="radio" class="theme-option" data-theme-option="system" aria-checked="false">
+                  <span class="theme-preview" aria-hidden="true"><span data-theme-swatch="light"><span class="swatch-side"></span><span class="swatch-main"><i></i><i></i><b></b></span></span><span data-theme-swatch="dark"><span class="swatch-side"></span><span class="swatch-main"><i></i><i></i><b></b></span></span></span>
+                  <span class="theme-name">Match Windows</span>
+                </button>
+                <button type="button" role="radio" class="theme-option" data-theme-option="light" aria-checked="false">
+                  <span class="theme-preview" aria-hidden="true"><span data-theme-swatch="light"><span class="swatch-side"></span><span class="swatch-main"><i></i><i></i><b></b></span></span></span>
+                  <span class="theme-name">Light</span>
+                </button>
+                <button type="button" role="radio" class="theme-option" data-theme-option="dark" aria-checked="false">
+                  <span class="theme-preview" aria-hidden="true"><span data-theme-swatch="dark"><span class="swatch-side"></span><span class="swatch-main"><i></i><i></i><b></b></span></span></span>
+                  <span class="theme-name">Dark</span>
+                </button>
+                <button type="button" role="radio" class="theme-option" data-theme-option="midnight" aria-checked="false">
+                  <span class="theme-preview" aria-hidden="true"><span data-theme-swatch="midnight"><span class="swatch-side"></span><span class="swatch-main"><i></i><i></i><b></b></span></span></span>
+                  <span class="theme-name">Midnight</span>
+                </button>
+                <button type="button" role="radio" class="theme-option" data-theme-option="ocean" aria-checked="false">
+                  <span class="theme-preview" aria-hidden="true"><span data-theme-swatch="ocean"><span class="swatch-side"></span><span class="swatch-main"><i></i><i></i><b></b></span></span></span>
+                  <span class="theme-name">Ocean</span>
+                </button>
+                <button type="button" role="radio" class="theme-option" data-theme-option="forest" aria-checked="false">
+                  <span class="theme-preview" aria-hidden="true"><span data-theme-swatch="forest"><span class="swatch-side"></span><span class="swatch-main"><i></i><i></i><b></b></span></span></span>
+                  <span class="theme-name">Forest</span>
+                </button>
+                <button type="button" role="radio" class="theme-option" data-theme-option="violet" aria-checked="false">
+                  <span class="theme-preview" aria-hidden="true"><span data-theme-swatch="violet"><span class="swatch-side"></span><span class="swatch-main"><i></i><i></i><b></b></span></span></span>
+                  <span class="theme-name">Violet</span>
+                </button>
+                <button type="button" role="radio" class="theme-option" data-theme-option="sunset" aria-checked="false">
+                  <span class="theme-preview" aria-hidden="true"><span data-theme-swatch="sunset"><span class="swatch-side"></span><span class="swatch-main"><i></i><i></i><b></b></span></span></span>
+                  <span class="theme-name">Sunset</span>
+                </button>
+              </div>
+              <p class="panel-note">The colors of this window. The recorder bar stays dark so it reads over anything you record.</p>
             </section>
             <section class="panel panel-report" aria-labelledby="report-title">
               <header class="panel-head">

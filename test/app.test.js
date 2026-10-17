@@ -1138,6 +1138,44 @@ test("the crop preview shows the crop whether the live capture starts or not", (
   assert.match(app, /new URLSearchParams\(location\.search\)\.has\("smoke"\)/);
   assert.match(app, /window\.__recPreviewProbe = smokePreviewProbe/);
   assert.match(main, /window\.__recPreviewProbe\(\)/);
-  assert.match(main, /query: \{ smoke: "1" \}/);
+  assert.match(main, /if \(SMOKE\) query\.smoke = "1";/);
   assert.match(main, /cropPreview,/);
+});
+
+test("themes: every theme has colors, a Settings card, and a safe fallback", () => {
+  const themes = require("../lib/themes");
+  const root = path.join(__dirname, "..");
+  const css = fs.readFileSync(path.join(root, "renderer", "themes.css"), "utf8");
+  const html = fs.readFileSync(path.join(root, "renderer", "index.html"), "utf8");
+  const app = fs.readFileSync(path.join(root, "renderer", "app.js"), "utf8");
+  for (const theme of themes.THEMES) {
+    assert.ok(html.includes('data-theme-option="' + theme.id + '"'), theme.id + " card is missing");
+    assert.ok(app.includes("  " + theme.id + ': "' + theme.label + '",'), theme.id + " label differs in the page");
+    if (theme.id === "system") continue;
+    assert.ok(css.includes(':root[data-theme="' + theme.id + '"]'), theme.id + " colors are missing");
+    assert.match(theme.background, /^#[0-9a-f]{6}$/);
+  }
+  // An unknown or missing id lands on Light, the look from before themes.
+  assert.equal(themes.normalizeTheme("neon"), "light");
+  assert.equal(themes.normalizeTheme(undefined), "light");
+  assert.equal(themes.resolveTheme("system", true), "dark");
+  assert.equal(themes.resolveTheme("system", false), "light");
+  assert.equal(themes.themeSource("midnight"), "dark");
+  assert.equal(themes.themeSource("ocean"), "light");
+  assert.equal(themes.themeSource("system"), "system");
+  assert.equal(themes.themeBackground("system", true), themes.themeBackground("dark"));
+});
+
+test("the theme survives a restart", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rec-theme-"));
+  try {
+    db.openDb(dir);
+    db.kvSet("appTheme", "forest");
+    db.closeDb();
+    db.openDb(dir);
+    assert.equal(db.kvGet("appTheme", ""), "forest");
+  } finally {
+    db.closeDb();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

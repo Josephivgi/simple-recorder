@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld("rec", {
   takeOpen: (id) => ipcRenderer.invoke("take-open", { id }),
   recordingsOpen: () => ipcRenderer.invoke("recordings-open"),
   reportIssue: (kind) => ipcRenderer.invoke("issue-report-open", { kind }),
+  themeGet: () => ipcRenderer.invoke("theme-get"),
+  themeSet: (theme) => ipcRenderer.invoke("theme-set", { theme }),
 
   // Capture consent and prefs (persisted in SQLite by main).
   captureSetupStatus: () => {

@@ -140,6 +140,16 @@ pushes from the dev repo to the public repo on its own.
   never leave a full uncropped desktop or an empty box behind. The studio has no
   window list; the bar's Window picker still frames a window's rect as a crop
   through `lib/window-rect.cjs`.
+- `renderer/themes.css` + `theme-boot.js`, `lib/themes.js`: color themes for
+  the main window (Match Windows, Light, Dark, Midnight, Ocean, Forest,
+  Violet, Sunset). Every theme is a block of the same tokens app.css puts on
+  `:root`, keyed by `<html data-theme>`; components never name a theme. The
+  pick is the `appTheme` kv key (default Light, the pre-theme look). Main
+  reads it before the window opens: it sets the window background,
+  `nativeTheme.themeSource` (the Windows title bar), and passes `?theme=` so
+  `theme-boot.js` applies it before the first paint. Settings > Theme saves
+  through `theme-set`. Match Windows resolves to light or dark in the page
+  and follows Windows live. The recorder bar keeps its own dark look.
 - `renderer/overlay.{html,css,js}`: the floating bar and pickers.
 
 ## Data

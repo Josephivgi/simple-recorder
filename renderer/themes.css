@@ -1,0 +1,254 @@
+/* Color themes. Each block swaps the tokens app.css defines on :root, so
+   every component follows the theme without knowing about it. The <html>
+   element carries the resolved theme (Match Windows lands on light or dark
+   before it gets here). The same block also paints a theme's swatch on the
+   Settings page: a [data-theme-swatch] element takes that theme's tokens
+   whatever the window is showing. The ids match lib/themes.js. */
+
+:root[data-theme="light"],
+[data-theme-swatch="light"] {
+  color-scheme: light;
+  --canvas: oklch(0.97 0.006 250);
+  --surface: oklch(0.995 0.002 250);
+  --ink: oklch(0.28 0.02 255);
+  --muted: oklch(0.5 0.015 255);
+  --line: oklch(0.9 0.01 250);
+  --line-strong: oklch(0.82 0.012 250);
+  --well: oklch(0.94 0.008 250);
+  --accent: oklch(0.55 0.18 255);
+  --accent-ink: oklch(0.99 0 0);
+  --accent-soft: oklch(0.55 0.18 255 / 0.1);
+  --stage: oklch(0.2 0.02 255);
+  --stage-muted: oklch(0.7 0.02 255);
+  --stage-line: oklch(0.32 0.02 255);
+  --stage-well: oklch(0.26 0.02 255);
+}
+
+:root[data-theme="dark"],
+[data-theme-swatch="dark"] {
+  color-scheme: dark;
+  --canvas: oklch(0.17 0.01 255);
+  --surface: oklch(0.215 0.012 255);
+  --ink: oklch(0.94 0.006 250);
+  --muted: oklch(0.72 0.012 255);
+  --line: oklch(0.3 0.012 255);
+  --line-strong: oklch(0.38 0.014 255);
+  --well: oklch(0.255 0.012 255);
+  --accent: oklch(0.7 0.14 255);
+  --accent-ink: oklch(0.17 0.03 255);
+  --accent-soft: oklch(0.7 0.14 255 / 0.16);
+  --danger: oklch(0.62 0.19 25);
+  --record: oklch(0.66 0.21 25);
+  --stage: oklch(0.13 0.01 255);
+  --stage-muted: oklch(0.72 0.012 255);
+  --stage-line: oklch(0.27 0.012 255);
+  --stage-well: oklch(0.21 0.012 255);
+  --shadow-pop: 0 12px 32px oklch(0 0 0 / 0.45), 0 2px 6px oklch(0 0 0 / 0.3);
+  --shadow-lift: 0 1px 2px oklch(0 0 0 / 0.4);
+}
+
+:root[data-theme="midnight"],
+[data-theme-swatch="midnight"] {
+  color-scheme: dark;
+  --canvas: oklch(0.16 0.025 285);
+  --surface: oklch(0.205 0.03 285);
+  --ink: oklch(0.95 0.01 285);
+  --muted: oklch(0.74 0.03 285);
+  --line: oklch(0.29 0.035 285);
+  --line-strong: oklch(0.37 0.04 285);
+  --well: oklch(0.245 0.032 285);
+  --accent: oklch(0.72 0.15 300);
+  --accent-ink: oklch(0.17 0.04 290);
+  --accent-soft: oklch(0.72 0.15 300 / 0.16);
+  --danger: oklch(0.62 0.19 25);
+  --record: oklch(0.66 0.21 25);
+  --stage: oklch(0.12 0.025 285);
+  --stage-muted: oklch(0.74 0.03 285);
+  --stage-line: oklch(0.26 0.03 285);
+  --stage-well: oklch(0.2 0.03 285);
+  --shadow-pop: 0 12px 32px oklch(0 0 0 / 0.45), 0 2px 6px oklch(0 0 0 / 0.3);
+  --shadow-lift: 0 1px 2px oklch(0 0 0 / 0.4);
+}
+
+:root[data-theme="ocean"],
+[data-theme-swatch="ocean"] {
+  color-scheme: light;
+  --canvas: oklch(0.965 0.014 215);
+  --surface: oklch(0.995 0.004 215);
+  --ink: oklch(0.27 0.035 230);
+  --muted: oklch(0.49 0.03 225);
+  --line: oklch(0.89 0.02 215);
+  --line-strong: oklch(0.81 0.028 215);
+  --well: oklch(0.93 0.02 215);
+  --accent: oklch(0.52 0.11 220);
+  --accent-ink: oklch(0.99 0 0);
+  --accent-soft: oklch(0.52 0.11 220 / 0.12);
+  --stage: oklch(0.21 0.035 230);
+  --stage-muted: oklch(0.72 0.03 225);
+  --stage-line: oklch(0.33 0.035 230);
+  --stage-well: oklch(0.27 0.035 230);
+  --shadow-pop: 0 12px 32px oklch(0.2 0.035 230 / 0.16), 0 2px 6px oklch(0.2 0.035 230 / 0.08);
+  --shadow-lift: 0 1px 2px oklch(0.2 0.035 230 / 0.1);
+}
+
+:root[data-theme="forest"],
+[data-theme-swatch="forest"] {
+  color-scheme: light;
+  --canvas: oklch(0.965 0.012 140);
+  --surface: oklch(0.995 0.004 140);
+  --ink: oklch(0.27 0.03 155);
+  --muted: oklch(0.49 0.025 150);
+  --line: oklch(0.89 0.018 140);
+  --line-strong: oklch(0.81 0.025 140);
+  --well: oklch(0.93 0.018 140);
+  --accent: oklch(0.5 0.11 152);
+  --accent-ink: oklch(0.99 0 0);
+  --accent-soft: oklch(0.5 0.11 152 / 0.12);
+  --stage: oklch(0.21 0.03 160);
+  --stage-muted: oklch(0.72 0.025 155);
+  --stage-line: oklch(0.33 0.03 160);
+  --stage-well: oklch(0.27 0.03 160);
+  --shadow-pop: 0 12px 32px oklch(0.2 0.03 160 / 0.16), 0 2px 6px oklch(0.2 0.03 160 / 0.08);
+  --shadow-lift: 0 1px 2px oklch(0.2 0.03 160 / 0.1);
+}
+
+:root[data-theme="violet"],
+[data-theme-swatch="violet"] {
+  color-scheme: light;
+  --canvas: oklch(0.965 0.012 300);
+  --surface: oklch(0.995 0.004 300);
+  --ink: oklch(0.28 0.03 290);
+  --muted: oklch(0.5 0.03 290);
+  --line: oklch(0.895 0.018 300);
+  --line-strong: oklch(0.815 0.025 300);
+  --well: oklch(0.935 0.018 300);
+  --accent: oklch(0.52 0.18 295);
+  --accent-ink: oklch(0.99 0 0);
+  --accent-soft: oklch(0.52 0.18 295 / 0.1);
+  --stage: oklch(0.2 0.035 290);
+  --stage-muted: oklch(0.72 0.03 290);
+  --stage-line: oklch(0.32 0.035 290);
+  --stage-well: oklch(0.26 0.035 290);
+  --shadow-pop: 0 12px 32px oklch(0.2 0.035 290 / 0.16), 0 2px 6px oklch(0.2 0.035 290 / 0.08);
+  --shadow-lift: 0 1px 2px oklch(0.2 0.035 290 / 0.1);
+}
+
+:root[data-theme="sunset"],
+[data-theme-swatch="sunset"] {
+  color-scheme: light;
+  --canvas: oklch(0.97 0.012 75);
+  --surface: oklch(0.995 0.005 75);
+  --ink: oklch(0.28 0.03 50);
+  --muted: oklch(0.5 0.03 55);
+  --line: oklch(0.9 0.02 70);
+  --line-strong: oklch(0.82 0.03 65);
+  --well: oklch(0.94 0.02 70);
+  --accent: oklch(0.55 0.15 45);
+  --accent-ink: oklch(0.99 0 0);
+  --accent-soft: oklch(0.55 0.15 45 / 0.12);
+  --stage: oklch(0.21 0.025 45);
+  --stage-muted: oklch(0.72 0.025 50);
+  --stage-line: oklch(0.33 0.025 45);
+  --stage-well: oklch(0.27 0.025 45);
+  --shadow-pop: 0 12px 32px oklch(0.2 0.025 45 / 0.16), 0 2px 6px oklch(0.2 0.025 45 / 0.08);
+  --shadow-lift: 0 1px 2px oklch(0.2 0.025 45 / 0.1);
+}
+
+/* Settings > Theme: one card per theme, each with a small picture of the
+   window drawn in that theme's own tokens. */
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 760px) {
+  .theme-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.theme-option {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 6px;
+  height: auto;
+  padding: 6px 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+}
+
+@media (hover: hover) {
+  .theme-option:hover:not([aria-checked="true"]) {
+    border-color: var(--line-strong);
+  }
+}
+
+.theme-option[aria-checked="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.theme-name {
+  padding: 0 2px;
+}
+
+.theme-preview {
+  display: flex;
+  height: 54px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+/* The picture: a sidebar strip, a panel with two text lines, and an accent
+   button, all in the swatch's tokens. */
+[data-theme-swatch] {
+  flex: 1 1 0;
+  display: grid;
+  grid-template-columns: 28% 1fr;
+  min-width: 0;
+  background: var(--canvas);
+}
+
+.swatch-side {
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+}
+
+.swatch-main {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+}
+
+.swatch-main i {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--ink);
+}
+
+.swatch-main i + i {
+  width: 60%;
+  background: var(--muted);
+}
+
+.swatch-main b {
+  display: block;
+  width: 46%;
+  height: 9px;
+  margin-top: 2px;
+  border-radius: 3px;
+  background: var(--accent);
+}
