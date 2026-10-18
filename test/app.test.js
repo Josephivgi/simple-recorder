@@ -1225,3 +1225,176 @@ test("screenshot: a crop maps to a pixel rect inside the image", () => {
   assert.deepEqual(cropPixelRect(size, { x: 2, y: 2, w: 0.5, h: 0.5 }), { x: 0, y: 0, width: 2560, height: 1440 });
   assert.deepEqual(cropPixelRect(size, { x: 0, y: 0, w: 0, h: 1 }), { x: 0, y: 0, width: 2560, height: 1440 });
 });
+
+test("player: prefs stay sane and survive a restart", () => {
+  const { normalizePlayerPrefs, readPlayerPrefs, writePlayerPrefs, PLAYER_RATES } = require("../lib/player");
+  assert.deepEqual(normalizePlayerPrefs(null), { volume: 1, muted: false, rate: 1, loop: false });
+  assert.deepEqual(normalizePlayerPrefs({ volume: 7, muted: "1", rate: 1.3, loop: true }), {
+    volume: 1,
+    muted: true,
+    rate: 1.25,
+    loop: true,
+  });
+  assert.equal(normalizePlayerPrefs({ volume: -2 }).volume, 0);
+  assert.equal(normalizePlayerPrefs({ rate: "fast" }).rate, 1);
+  assert.equal(normalizePlayerPrefs({ volume: 0.456 }).volume, 0.46);
+  assert.deepEqual(PLAYER_RATES, [0.5, 0.75, 1, 1.25, 1.5, 2]);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rec-player-"));
+  try {
+    db.openDb(dir);
+    assert.deepEqual(readPlayerPrefs(db), { volume: 1, muted: false, rate: 1, loop: false });
+    writePlayerPrefs(db, { volume: 0.3, rate: 2 });
+    writePlayerPrefs(db, { muted: true });
+    db.closeDb();
+    db.openDb(dir);
+    assert.deepEqual(readPlayerPrefs(db), { volume: 0.3, muted: true, rate: 2, loop: false });
+    // The kv keys are additive, like every other pref.
+    assert.equal(db.kvGet("playerVolume", ""), "0.3");
+  } finally {
+    db.closeDb();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("player: the clock, prev/next, and seek math", () => {
+  const { formatPlayerClock, playerNeighbors, seekTarget, seekFraction } = require("../lib/player");
+  assert.equal(formatPlayerClock(0), "0:00");
+  assert.equal(formatPlayerClock(65.9), "1:05");
+  assert.equal(formatPlayerClock(3725), "1:02:05");
+  assert.equal(formatPlayerClock(Infinity), "0:00");
+  assert.equal(formatPlayerClock(NaN), "0:00");
+  assert.equal(formatPlayerClock(-4), "0:00");
+  const takes = [{ id: "c" }, { id: "b" }, { id: "a" }];
+  assert.deepEqual(playerNeighbors(takes, "b"), { index: 1, count: 3, prev: { id: "c" }, next: { id: "a" } });
+  assert.equal(playerNeighbors(takes, "c").prev, null);
+  assert.equal(playerNeighbors(takes, "a").next, null);
+  assert.equal(playerNeighbors(takes, "zzz").index, -1);
+  assert.equal(seekTarget(5, 60, 10), 15);
+  assert.equal(seekTarget(55, 60, 10), 60);
+  assert.equal(seekTarget(3, 60, -10), 0);
+  assert.equal(seekTarget(3, Infinity, 10), 13);
+  assert.equal(seekFraction(60, 0.5), 30);
+  assert.equal(seekFraction(60, 7), 60);
+  assert.equal(seekFraction(NaN, 0.5), 0);
+});
+
+test("player: take files are served in byte ranges, which is what makes them seekable", () => {
+  const { parseRange, rangeResponse, mediaTypeFor } = require("../lib/take-stream");
+  const html = fs.readFileSync(path.join(__dirname, "..", "renderer", "index.html"), "utf8");
+  assert.equal(parseRange("", 100), null);
+  assert.equal(parseRange("items=0-5", 100), null);
+  assert.deepEqual(parseRange("bytes=0-99", 1000), { ok: true, start: 0, end: 99, size: 1000 });
+  assert.deepEqual(parseRange("bytes=900-", 1000), { ok: true, start: 900, end: 999, size: 1000 });
+  assert.deepEqual(parseRange("bytes=-100", 1000), { ok: true, start: 900, end: 999, size: 1000 });
+  assert.deepEqual(parseRange("bytes=0-5000", 1000), { ok: true, start: 0, end: 999, size: 1000 });
+  assert.deepEqual(parseRange("bytes=0-9,20-29", 1000), { ok: true, start: 0, end: 9, size: 1000 });
+  assert.equal(parseRange("bytes=1000-", 1000).ok, false);
+  assert.equal(parseRange("bytes=50-10", 1000).ok, false);
+  assert.equal(parseRange("bytes=0-", 0).ok, false);
+
+  const whole = rangeResponse(null, 1000, path.join("C:", "Users", "Example", "Videos", "Simple recorder", "take.mp4"));
+  assert.equal(whole.status, 200);
+  assert.equal(whole.headers["Content-Length"], "1000");
+  assert.equal(whole.headers["Accept-Ranges"], "bytes");
+  assert.equal(whole.headers["Content-Type"], "video/mp4");
+  // Save frame draws the video to a canvas, which needs the response to be
+  // CORS-readable from the page.
+  assert.equal(whole.headers["Access-Control-Allow-Origin"], "*");
+  assert.match(html, /<video class="player-video" data-player-video[^>]*crossorigin="anonymous"/);
+  const part = rangeResponse(parseRange("bytes=900-", 1000), 1000, "take.webm");
+  assert.equal(part.status, 206);
+  assert.equal(part.headers["Content-Range"], "bytes 900-999/1000");
+  assert.equal(part.headers["Content-Length"], "100");
+  assert.equal(part.headers["Content-Type"], "video/webm");
+  assert.deepEqual([part.start, part.end, part.length], [900, 999, 100]);
+  const bad = rangeResponse(parseRange("bytes=5000-", 1000), 1000, "shot.png");
+  assert.equal(bad.status, 416);
+  assert.equal(bad.headers["Content-Range"], "bytes */1000");
+  assert.equal(bad.length, 0);
+  assert.equal(mediaTypeFor("Screenshot 1.PNG"), "image/png");
+  assert.equal(mediaTypeFor("odd.bin"), "application/octet-stream");
+
+  // Main serves take:// through these, from disk, never through net.fetch.
+  const main = fs.readFileSync(path.join(__dirname, "..", "electron", "main.cjs"), "utf8");
+  assert.match(main, /rangeResponse\(parseRange\(request\.headers\.get\("range"\), info\.size\), info\.size, resolved\)/);
+  assert.match(main, /fssync\.createReadStream\(resolved, \{ start: plan\.start, end: plan\.end \}\)/);
+  assert.ok(!main.includes("net.fetch("), "take files should stream from disk with Range support");
+});
+
+test("player: the Takes page opens takes in the built-in player, with the controls a player needs", () => {
+  const root = path.join(__dirname, "..");
+  const html = fs.readFileSync(path.join(root, "renderer", "index.html"), "utf8");
+  const app = fs.readFileSync(path.join(root, "renderer", "app.js"), "utf8");
+  const css = fs.readFileSync(path.join(root, "renderer", "app.css"), "utf8");
+  const preload = fs.readFileSync(path.join(root, "electron", "preload.cjs"), "utf8");
+  const main = fs.readFileSync(path.join(root, "electron", "main.cjs"), "utf8");
+
+  // Play / View and the thumbnail go to the player, not to shell.openPath.
+  assert.match(app, /openPlayer\(open\.getAttribute\("data-take-open"\)\)/);
+  assert.ok(!/api\.takeOpen\(open\.getAttribute/.test(app), "the card still hands the file to an outside app");
+  assert.match(app, /isScreenshotTake\(take\) \? "View" : "Play"/);
+
+  // The player's own controls, in the markup.
+  for (const hook of [
+    "data-player-close",
+    "data-player-toggle",
+    'data-player-skip="-10"',
+    'data-player-skip="10"',
+    "data-player-seek",
+    "data-player-mute",
+    "data-player-volume",
+    "data-player-rate",
+    "data-player-loop",
+    "data-player-full",
+    "data-player-prev",
+    "data-player-next",
+    "data-player-frame",
+    "data-player-copy",
+    "data-player-show",
+    "data-player-external",
+    "data-player-delete",
+    "data-player-help",
+    "data-player-zoom-in",
+    "data-player-zoom-out",
+    "data-player-zoom-fit",
+    "data-player-zoom-actual",
+  ]) {
+    assert.ok(html.includes(hook), hook + " is missing from the player");
+  }
+  // Speeds in the page match the shared list.
+  assert.match(app, /const PLAYER_RATES = \[0\.5, 0\.75, 1, 1\.25, 1\.5, 2\];/);
+  // The clock falls back to the take row's length, and a file that reports
+  // Infinity gets the seek-to-end fix so the seek bar can be trusted.
+  assert.match(app, /const hint = Number\(player\.take && player\.take\.durationMs\) \/ 1000;/);
+  assert.match(app, /function startPlayerDurationFix\(\)/);
+  assert.match(app, /v\.currentTime = 1e101;/);
+  // Keyboard: the shortcuts the help sheet promises exist in the handler.
+  const keys = [" ", "j", "l", "m", "f", "r", "s", "n", "p", ",", ".", "Home", "End", "c", "+", "-"];
+  for (const key of keys) {
+    assert.ok(app.includes('case "' + key + '":'), key + " is not handled");
+  }
+  assert.match(app, /key === "Escape"/);
+  // Pictures: fit never blows a small screenshot up past 1:1, the wheel zooms
+  // around the pointer, and a bigger-than-stage picture drags.
+  assert.match(app, /return Math\.min\(1, \(box\.width - pad\) \/ w, \(box\.height - pad - PICTURE_ZOOM_BAR_H\) \/ h\);/);
+  assert.match(app, /refs\.picture\.addEventListener\(\s*"wheel"/);
+  assert.match(app, /classList\.toggle\("can-pan"/);
+  // Prefs, Save frame, and Copy go through main, never localStorage.
+  assert.match(preload, /playerPrefsGet: \(\) => ipcRenderer\.invoke\("player-prefs-get"\)/);
+  assert.match(preload, /playerPrefsSet: \(prefs\) => ipcRenderer\.invoke\("player-prefs-set"/);
+  assert.match(preload, /playerFrameSave: \(payload\) => ipcRenderer\.invoke\("player-frame-save"/);
+  assert.match(preload, /takeCopyImage: \(id\) => ipcRenderer\.invoke\("take-copy-image"/);
+  assert.match(main, /ipcMain\.handle\("player-prefs-get"/);
+  assert.match(main, /ipcMain\.handle\("player-prefs-set"/);
+  assert.match(main, /ipcMain\.handle\("player-frame-save"/);
+  assert.match(main, /ipcMain\.handle\("take-copy-image"/);
+  assert.match(main, /png\.readUInt32BE\(0\) !== 0x89504e47/);
+  assert.ok(!app.includes("localStorage"), "the player must not keep state in localStorage");
+  // The dark stage follows the theme tokens, and the controls fade while playing.
+  assert.match(css, /\.player \{[^}]*background: var\(--stage\);/);
+  assert.match(css, /\.player\.is-idle \.player-controls/);
+  // The smoke run drives the real player and the real picture viewer.
+  assert.match(app, /window\.__recPlayerProbe = smokePlayerProbe/);
+  assert.match(main, /window\.__recPlayerProbe\(\)/);
+  assert.match(main, /player: playerProbe,/);
+});

@@ -14,6 +14,11 @@ contextBridge.exposeInMainWorld("rec", {
   takeDelete: (id) => ipcRenderer.invoke("take-delete", { id }),
   takeShow: (id) => ipcRenderer.invoke("take-show", { id }),
   takeOpen: (id) => ipcRenderer.invoke("take-open", { id }),
+  // The built-in player: prefs live in SQLite, and Save frame writes a PNG.
+  playerPrefsGet: () => ipcRenderer.invoke("player-prefs-get"),
+  playerPrefsSet: (prefs) => ipcRenderer.invoke("player-prefs-set", prefs || {}),
+  playerFrameSave: (payload) => ipcRenderer.invoke("player-frame-save", payload || {}),
+  takeCopyImage: (id) => ipcRenderer.invoke("take-copy-image", { id }),
   screenshotTake: (payload) => ipcRenderer.invoke("screenshot-take", payload || {}),
   onScreenshotSaved: (handler) => {
     const listen = (_event, payload) => handler(payload);

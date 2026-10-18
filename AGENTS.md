@@ -56,9 +56,33 @@ pushes from the dev repo to the public repo on its own.
   full-resolution frame of the take's screen through desktopCapturer, crop it
   the way the take is cropped, and write a PNG into today's day folder. The
   row goes in `takes` with `mime` `image/png`, so the Takes page lists it
-  with the videos (an image card; Open shows it in the default viewer). The
+  with the videos (an image card; View opens it in the built-in viewer). The
   main window is excluded from capture (`setContentProtection`) for the grab
   instead of hidden, so nothing flickers; the bar and strips already are.
+- `lib/player.js` + `lib/take-stream.js`: the built-in player. Play or View
+  on a Takes card (or its thumbnail) opens the take over the whole window
+  instead of handing the file to an outside app. The `<video>` element
+  decodes; the controls are the app's own: seek bar with hover time and
+  scrubbing, play/pause, 10 s skips, volume and mute, speed (0.5 to 2x),
+  loop, full screen, prev/next through the list, Save frame (the paused
+  picture as the next `Screenshot N`, through `player-frame-save`), Show in
+  folder, Open with (the old external open), Delete (same dialog as the
+  card), and a shortcuts sheet (`?`). Screenshots open in the same place as
+  a picture: Fit (never past 1:1), wheel and `+`/`-` zoom around the pointer,
+  drag to pan, `1` for actual size, Copy to the clipboard (`take-copy-image`).
+  Volume, mute, speed, and loop are kv prefs (`playerVolume`, `playerMuted`,
+  `playerRate`, `playerLoop`) read through `player-prefs-get`.
+  `lib/player.js` is the pure part (prefs, clock, neighbors, seek math); the
+  page keeps its own copies of the clock and rate list, and a test pins them
+  together. `lib/take-stream.js` is why seeking works: `take://` serves
+  files in byte ranges (206 + Content-Range) straight from disk, since a
+  plain 200 reads as "not seekable" to Chromium and gave a 10-minute take a
+  2-second duration. A MediaRecorder file that still reports Infinity gets
+  one seek to the end so Chromium works the length out; the take row's
+  `durationMs` stands in for the clock until then. The smoke run opens the
+  newest screenshot and video in the real player (`player` in the JSON) and
+  `REC_SMOKE_SHOT=<png>` captures the window with it open
+  (`REC_SMOKE_PLAYER=picture` ends on the picture viewer instead).
 - `lib/window-rect.cjs`: Win32 window rect by title (async PowerShell,
   EnumWindows + GetWindowRect), the bridge from a desktopCapturer name to
   a screen-space crop.
@@ -128,7 +152,8 @@ pushes from the dev repo to the public repo on its own.
   fits the window; nothing scrolls at the default size. The boxes use custom
   pickers, plus a bottom dock with Start Recorder Bar. Takes is the saved
   files grouped under the day folder each one sits in (recent takes, open
-  folder). Settings holds Default quality (720p/1080p/1440p), the same
+  folder); Play, View, and the thumbnail open the built-in player
+  (`lib/player.js`). Settings holds Default quality (720p/1080p/1440p), the same
   `recordQuality` pref the studio Quality box sets, saved in SQLite so it
   survives a restart, and Report a problem (Report a bug / Suggest a
   feature). Those buttons call `issue-report-open`; main builds the URL with
@@ -191,7 +216,7 @@ pushes from the dev repo to the public repo on its own.
 - `npm test`: unit tests (node:test, main-process modules only).
 - `npm run smoke`: hidden boot, prints `SMOKE {...}` JSON (bridge, studio
   panels, Start Recorder Bar, take day groups present, the update mode, the
-  Default quality, and `cropPreview`), exits. The crop preview probe sets a
+  Default quality, `cropPreview`, and `player`), exits. The crop preview probe sets a
   crop, takes the failed-live path, pulls one still through the app's own
   IPC, and reports the frame's real geometry: `cropTrue` means the crop
   region is rendered as large as the frame allows and never cut, which is the

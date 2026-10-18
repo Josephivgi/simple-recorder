@@ -3010,14 +3010,14 @@ function takeCards(takes) {
       return (
         '<div class="take-card' + (isNew ? " is-new" : "") + '" data-take="' + esc(take.id) + '"' + (deleting ? " aria-busy=\"true\"" : "") + ">" +
         (isScreenshotTake(take)
-          ? '<img class="take-video take-image" alt=""' + (deleting ? "" : ' src="' + esc(takeVideoUrl(take)) + '"') + ' data-take-open="' + esc(take.id) + '" />'
-          : '<video class="take-video"' + (deleting ? "" : ' src="' + esc(takeVideoUrl(take)) + '"') + ' preload="metadata" muted playsinline></video>') +
+          ? '<img class="take-video take-image" alt=""' + (deleting ? "" : ' src="' + esc(takeVideoUrl(take)) + '"') + ' data-take-open="' + esc(take.id) + '" title="View" />'
+          : '<video class="take-video"' + (deleting ? "" : ' src="' + esc(takeVideoUrl(take)) + '"') + ' preload="metadata" muted playsinline data-take-open="' + esc(take.id) + '" title="Play"></video>') +
         '<div class="take-body">' +
         '<span class="take-name">' + esc(take.name || "Take") + (isNew ? '<span class="take-new-badge">New</span>' : "") + "</span>" +
         '<span class="take-meta">' + esc(takeMeta(take)) + "</span>" +
         '<div class="take-actions">' +
         '<button type="button" data-take-show="' + esc(take.id) + '">Show in folder</button>' +
-        '<button type="button" data-take-open="' + esc(take.id) + '">Open</button>' +
+        '<button type="button" class="primary" data-take-open="' + esc(take.id) + '">' + (isScreenshotTake(take) ? "View" : "Play") + "</button>" +
         '<button type="button" class="danger" data-take-delete="' + esc(take.id) + '"' +
         (session.deletingId ? " disabled" : "") + ">" + (deleting ? "Deleting" : "Delete") + "</button>" +
         "</div>" +
@@ -3111,25 +3111,15 @@ function wireTakes() {
       api.takeShow(show.getAttribute("data-take-show")).catch(() => {});
       return;
     }
+    // Play, View, and the thumbnail all open the built-in player.
     const open = target.closest("[data-take-open]");
     if (open) {
-      api.takeOpen(open.getAttribute("data-take-open")).catch(() => {});
+      openPlayer(open.getAttribute("data-take-open"));
       return;
     }
     const del = target.closest("[data-take-delete]");
     if (del) {
       void deleteTake(del.getAttribute("data-take-delete"));
-      return;
-    }
-    const video = target.closest("video.take-video");
-    if (video) {
-      if (video.paused) {
-        video.muted = false;
-        video.controls = true;
-        void video.play().catch(() => {});
-      } else {
-        video.pause();
-      }
     }
   });
 }
@@ -3144,6 +3134,1138 @@ async function refreshTakes() {
     /* list stays as-is */
   }
   paintTakes();
+}
+
+// ---------------------------------------------------------------------------
+// Player
+//
+// Open on a take card opens it here, over the whole window, instead of
+// handing the file to whatever Windows has for .mp4. The <video> element does
+// the decoding; everything around it is ours: the seek bar, play/pause, skip,
+// volume, speed, loop, full screen, keyboard shortcuts, prev/next through the
+// list, Save frame, and the file actions from the card. Screenshots open in
+// the same place as a picture. Volume, mute, speed, and loop are kept in
+// SQLite through main, so they come back after a restart.
+//
+// MediaRecorder files often carry no duration (the browser reports Infinity
+// until it has read to the end). The take row knows how long it recorded, so
+// that stands in for the clock, and the player seeks to the end once, which
+// makes Chromium work the real duration out so the seek bar can be trusted.
+// ---------------------------------------------------------------------------
+
+const PLAYER_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
+const PLAYER_IDLE_MS = 2600;
+const PLAYER_SKIP_S = 10;
+const PLAYER_ARROW_S = 5;
+const PLAYER_FRAME_S = 1 / 30;
+const PLAYER_DURATION_FIX_MS = 4000;
+
+const PLAYER_ICONS = {
+  play: '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor"/></svg>',
+  replay:
+    '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5V2L7 6l5 4V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z" fill="currentColor"/></svg>',
+  volumeHigh:
+    '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  volumeLow:
+    '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  volumeOff:
+    '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z" fill="currentColor"/><path d="M16 9l5 6M21 9l-5 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  fullOn:
+    '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  fullOff:
+    '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M9 4v5H4M15 9h5V4M20 15h-5v5M4 15h5v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+
+const player = {
+  open: false,
+  take: null,
+  kind: "video",
+  prefs: { volume: 1, muted: false, rate: 1, loop: false },
+  prefsLoaded: false,
+  wantPlay: false,
+  fixingDuration: false,
+  fixTimer: 0,
+  idleTimer: 0,
+  clickTimer: 0,
+  scrubbing: false,
+  scrubWasPlaying: false,
+  saving: false,
+  deleting: false,
+  error: "",
+  returnFocus: null,
+  paintQueued: false,
+  zoom: { mode: "fit", scale: 1, x: 0, y: 0 },
+  pan: null,
+  resumeAt: 0,
+};
+
+let playerDom = null;
+
+function playerRefs() {
+  if (playerDom) return playerDom;
+  const root = document.querySelector("[data-player]");
+  if (!root) return null;
+  const q = (sel) => root.querySelector(sel);
+  playerDom = {
+    root,
+    head: q(".player-head"),
+    stage: q("[data-player-stage]"),
+    video: q("[data-player-video]"),
+    image: q("[data-player-image]"),
+    picture: q("[data-player-picture]"),
+    copy: q("[data-player-copy]"),
+    zoomLevel: q("[data-player-zoom-fit]"),
+    zoomActual: q("[data-player-zoom-actual]"),
+    flash: q("[data-player-flash]"),
+    error: q("[data-player-error]"),
+    errorText: q("[data-player-error-text]"),
+    name: q("[data-player-name]"),
+    meta: q("[data-player-meta]"),
+    frame: q("[data-player-frame]"),
+    prev: q("[data-player-prev]"),
+    next: q("[data-player-next]"),
+    controls: q("[data-player-controls]"),
+    seek: q("[data-player-seek]"),
+    buffered: q("[data-player-buffered]"),
+    played: q("[data-player-played]"),
+    thumb: q("[data-player-thumb]"),
+    tip: q("[data-player-tip]"),
+    toggle: q("[data-player-toggle]"),
+    mute: q("[data-player-mute]"),
+    volume: q("[data-player-volume]"),
+    current: q("[data-player-current]"),
+    duration: q("[data-player-duration]"),
+    rate: q("[data-player-rate]"),
+    rateMenu: q("[data-player-rate-menu]"),
+    loop: q("[data-player-loop]"),
+    help: q("[data-player-help]"),
+    helpSheet: q("[data-player-help-sheet]"),
+    full: q("[data-player-full]"),
+  };
+  return playerDom;
+}
+
+// h:mm:ss past the hour, m:ss under it; a file without a duration reads 0:00.
+function formatPlayerClock(seconds) {
+  const total = Number.isFinite(Number(seconds)) ? Math.max(0, Math.floor(Number(seconds))) : 0;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = String(total % 60).padStart(2, "0");
+  if (h > 0) return h + ":" + String(m).padStart(2, "0") + ":" + s;
+  return m + ":" + s;
+}
+
+function normalizePlayerPrefs(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const volume = Number(src.volume);
+  const rate = Number(src.rate);
+  let bestRate = 1;
+  if (Number.isFinite(rate)) {
+    bestRate = PLAYER_RATES[0];
+    for (const r of PLAYER_RATES) if (Math.abs(r - rate) < Math.abs(bestRate - rate)) bestRate = r;
+  }
+  return {
+    volume: Number.isFinite(volume) ? Math.min(1, Math.max(0, Math.round(volume * 100) / 100)) : 1,
+    muted: src.muted === true || src.muted === "1",
+    rate: bestRate,
+    loop: src.loop === true || src.loop === "1",
+  };
+}
+
+// The duration the clock and seek bar work from: the browser's once it is a
+// real number, otherwise what the take row recorded.
+function playerDuration() {
+  const refs = playerRefs();
+  const v = refs && refs.video;
+  if (v && Number.isFinite(v.duration) && v.duration > 0) return v.duration;
+  const hint = Number(player.take && player.take.durationMs) / 1000;
+  return Number.isFinite(hint) && hint > 0 ? hint : 0;
+}
+
+function playerNeighbors() {
+  const list = (Array.isArray(session.takes) ? session.takes : []).filter((take) => take && take.id);
+  const index = player.take ? list.findIndex((take) => take.id === player.take.id) : -1;
+  return {
+    index,
+    count: list.length,
+    prev: index > 0 ? list[index - 1] : null,
+    next: index >= 0 && index + 1 < list.length ? list[index + 1] : null,
+  };
+}
+
+async function loadPlayerPrefs() {
+  if (player.prefsLoaded || !api || typeof api.playerPrefsGet !== "function") return;
+  player.prefsLoaded = true;
+  try {
+    player.prefs = normalizePlayerPrefs(await api.playerPrefsGet());
+  } catch {
+    player.prefs = normalizePlayerPrefs(null);
+  }
+  applyPlayerPrefs();
+}
+
+function applyPlayerPrefs() {
+  const refs = playerRefs();
+  if (!refs) return;
+  const v = refs.video;
+  v.volume = player.prefs.volume;
+  v.muted = player.prefs.muted;
+  v.loop = player.prefs.loop;
+  v.defaultPlaybackRate = player.prefs.rate;
+  v.playbackRate = player.prefs.rate;
+  paintPlayerControls();
+}
+
+function savePlayerPrefs(patch) {
+  player.prefs = normalizePlayerPrefs(Object.assign({}, player.prefs, patch));
+  applyPlayerPrefs();
+  if (api && typeof api.playerPrefsSet === "function") api.playerPrefsSet(patch).catch(() => {});
+}
+
+function openPlayer(id, opts) {
+  const refs = playerRefs();
+  if (!refs) return;
+  const takes = Array.isArray(session.takes) ? session.takes : [];
+  const take = takes.find((item) => item && item.id === id);
+  if (!take) {
+    toast("That take is not in the list any more.", true);
+    return;
+  }
+  if (!player.open) {
+    player.returnFocus = document.activeElement;
+    player.open = true;
+    refs.root.hidden = false;
+    closePickers();
+    stopMeter();
+    void loadPlayerPrefs();
+  }
+  loadPlayerTake(take, opts);
+}
+
+function unloadPlayerVideo() {
+  const refs = playerRefs();
+  if (!refs) return;
+  const v = refs.video;
+  clearTimeout(player.fixTimer);
+  player.fixingDuration = false;
+  try {
+    v.pause();
+    v.removeAttribute("src");
+    v.load();
+  } catch {
+    /* nothing loaded */
+  }
+}
+
+function loadPlayerTake(take, opts) {
+  const refs = playerRefs();
+  if (!refs) return;
+  const options = opts || {};
+  player.take = take;
+  player.kind = isScreenshotTake(take) ? "image" : "video";
+  player.error = "";
+  player.wantPlay = player.kind === "video" && !options.paused;
+  refs.root.classList.toggle("is-image", player.kind === "image");
+  refs.root.classList.remove("has-error");
+  refs.root.classList.toggle("is-waiting", player.kind === "video");
+  refs.root.classList.toggle("is-paused", player.kind === "video");
+  refs.error.hidden = true;
+  refs.name.textContent = take.name || "Take";
+  refs.meta.textContent = takeMeta(take);
+  refs.frame.hidden = player.kind !== "video";
+  refs.copy.hidden = player.kind !== "image";
+  closePlayerMenus();
+  player.pan = null;
+  refs.root.classList.remove("is-panning");
+  const url = takeVideoUrl(take);
+  if (player.kind === "image") {
+    unloadPlayerVideo();
+    player.zoom = { mode: "fit", scale: 1, x: 0, y: 0 };
+    refs.image.removeAttribute("style");
+    refs.image.classList.remove("can-pan");
+    refs.picture.hidden = false;
+    refs.root.classList.add("is-waiting");
+    refs.image.src = url;
+  } else {
+    refs.picture.hidden = true;
+    refs.image.removeAttribute("src");
+    unloadPlayerVideo();
+    const v = refs.video;
+    v.loop = player.prefs.loop;
+    v.volume = player.prefs.volume;
+    v.muted = player.prefs.muted;
+    v.defaultPlaybackRate = player.prefs.rate;
+    v.playbackRate = player.prefs.rate;
+    player.resumeAt = Number(options.resumeAt) || 0;
+    v.src = url;
+    v.load();
+    refs.flash.innerHTML = PLAYER_ICONS.play;
+    refs.flash.classList.remove("show");
+  }
+  paintPlayerControls();
+  wakePlayer();
+  const focus = player.kind === "video" ? refs.toggle : refs.root;
+  if (focus && typeof focus.focus === "function") focus.focus({ preventScroll: true });
+}
+
+function closePlayer() {
+  const refs = playerRefs();
+  if (!refs || !player.open) return;
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  unloadPlayerVideo();
+  refs.image.removeAttribute("src");
+  refs.picture.hidden = true;
+  closePlayerMenus();
+  clearTimeout(player.idleTimer);
+  clearTimeout(player.clickTimer);
+  refs.root.classList.remove("is-idle", "is-full", "has-error", "is-waiting");
+  refs.root.hidden = true;
+  player.open = false;
+  player.take = null;
+  const back = player.returnFocus;
+  player.returnFocus = null;
+  if (back && typeof back.focus === "function" && document.contains(back)) back.focus({ preventScroll: true });
+  else document.querySelector('[data-page="takes"]')?.focus({ preventScroll: true });
+}
+
+function closePlayerMenus() {
+  const refs = playerRefs();
+  if (!refs) return;
+  refs.rateMenu.hidden = true;
+  refs.rate.setAttribute("aria-expanded", "false");
+  refs.helpSheet.hidden = true;
+  refs.help.setAttribute("aria-expanded", "false");
+}
+
+// The control bar and title fade while a video plays and nothing moves.
+function wakePlayer() {
+  const refs = playerRefs();
+  if (!refs) return;
+  refs.root.classList.remove("is-idle");
+  clearTimeout(player.idleTimer);
+  const v = refs.video;
+  const playing = player.kind === "video" && !v.paused && !v.ended && !player.scrubbing;
+  if (!playing) return;
+  player.idleTimer = setTimeout(() => {
+    if (!player.open || v.paused || v.ended || player.scrubbing) return;
+    if (!refs.rateMenu.hidden || !refs.helpSheet.hidden) return;
+    if (refs.controls.contains(document.activeElement) && document.activeElement !== refs.toggle) return;
+    refs.root.classList.add("is-idle");
+  }, PLAYER_IDLE_MS);
+}
+
+function flashPlayer(icon) {
+  const refs = playerRefs();
+  if (!refs) return;
+  refs.flash.innerHTML = PLAYER_ICONS[icon] || "";
+  refs.flash.classList.remove("show");
+  void refs.flash.offsetWidth;
+  refs.flash.classList.add("show");
+}
+
+function playerPlay() {
+  const refs = playerRefs();
+  if (!refs || player.kind !== "video" || player.error) return;
+  const v = refs.video;
+  if (v.ended && !v.loop) v.currentTime = 0;
+  player.wantPlay = true;
+  void v.play().catch((error) => {
+    // AbortError is a load that replaced this one; anything else is the file.
+    if (error && error.name === "AbortError") return;
+    showPlayerError("This file could not be played.");
+  });
+}
+
+function playerPause() {
+  const refs = playerRefs();
+  if (!refs) return;
+  player.wantPlay = false;
+  refs.video.pause();
+}
+
+function togglePlayer() {
+  const refs = playerRefs();
+  if (!refs || player.kind !== "video") return;
+  if (refs.video.paused || refs.video.ended) playerPlay();
+  else playerPause();
+}
+
+function playerSeekTo(seconds) {
+  const refs = playerRefs();
+  if (!refs || player.kind !== "video" || player.fixingDuration) return;
+  const length = playerDuration();
+  let to = Number(seconds) || 0;
+  if (length) to = Math.min(length, to);
+  to = Math.max(0, to);
+  try {
+    refs.video.currentTime = to;
+  } catch {
+    /* not seekable yet */
+  }
+  paintPlayerTime();
+}
+
+function playerSkip(seconds) {
+  const refs = playerRefs();
+  if (!refs) return;
+  playerSeekTo(refs.video.currentTime + seconds);
+}
+
+function playerStepFrame(direction) {
+  const refs = playerRefs();
+  if (!refs || player.kind !== "video") return;
+  if (!refs.video.paused) playerPause();
+  playerSeekTo(refs.video.currentTime + direction * PLAYER_FRAME_S);
+}
+
+function setPlayerVolume(volume, opts) {
+  const next = Math.min(1, Math.max(0, Math.round(Number(volume) * 100) / 100));
+  const patch = { volume: next };
+  if (next > 0 && player.prefs.muted && !(opts && opts.keepMute)) patch.muted = false;
+  savePlayerPrefs(patch);
+}
+
+function togglePlayerMute() {
+  const muted = !player.prefs.muted;
+  const patch = { muted };
+  if (!muted && player.prefs.volume === 0) patch.volume = 0.5;
+  savePlayerPrefs(patch);
+}
+
+function setPlayerRate(rate) {
+  savePlayerPrefs({ rate });
+  closePlayerMenus();
+  toast("Speed " + formatPlayerRate(player.prefs.rate));
+}
+
+function stepPlayerRate(direction) {
+  const index = PLAYER_RATES.indexOf(player.prefs.rate);
+  const next = PLAYER_RATES[Math.min(PLAYER_RATES.length - 1, Math.max(0, index + direction))];
+  if (next !== player.prefs.rate) setPlayerRate(next);
+}
+
+function formatPlayerRate(rate) {
+  return (Number.isInteger(rate) ? String(rate) : String(rate).replace(/^0/, "")) + "x";
+}
+
+function togglePlayerLoop() {
+  savePlayerPrefs({ loop: !player.prefs.loop });
+  toast(player.prefs.loop ? "Loop on" : "Loop off");
+}
+
+function togglePlayerFullscreen() {
+  const refs = playerRefs();
+  if (!refs) return;
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  } else {
+    refs.root.requestFullscreen().catch(() => toast("Full screen is not available.", true));
+  }
+}
+
+function showPlayerError(message) {
+  const refs = playerRefs();
+  if (!refs) return;
+  player.error = message || "This file could not be played.";
+  player.wantPlay = false;
+  refs.errorText.textContent = player.error;
+  refs.error.hidden = false;
+  refs.root.classList.add("has-error");
+  refs.root.classList.remove("is-waiting");
+  paintPlayerControls();
+}
+
+// A recording that reports Infinity gets one seek to the end; Chromium then
+// knows the real length, and we come back to where the take should start.
+function startPlayerDurationFix() {
+  const refs = playerRefs();
+  if (!refs) return;
+  const v = refs.video;
+  player.fixingDuration = true;
+  clearTimeout(player.fixTimer);
+  player.fixTimer = setTimeout(finishPlayerDurationFix, PLAYER_DURATION_FIX_MS);
+  try {
+    v.currentTime = 1e101;
+  } catch {
+    finishPlayerDurationFix();
+  }
+}
+
+function finishPlayerDurationFix() {
+  const refs = playerRefs();
+  if (!refs || !player.fixingDuration) return;
+  clearTimeout(player.fixTimer);
+  player.fixingDuration = false;
+  const v = refs.video;
+  try {
+    v.currentTime = Math.min(player.resumeAt || 0, playerDuration() || Infinity);
+  } catch {
+    /* fine where it is */
+  }
+  if (player.wantPlay) playerPlay();
+  else refs.root.classList.remove("is-waiting");
+  paintPlayerControls();
+}
+
+function queuePlayerTimePaint() {
+  if (player.paintQueued) return;
+  player.paintQueued = true;
+  requestAnimationFrame(() => {
+    player.paintQueued = false;
+    paintPlayerTime();
+  });
+}
+
+function paintPlayerTime() {
+  const refs = playerRefs();
+  if (!refs || !player.open) return;
+  const v = refs.video;
+  const length = playerDuration();
+  const now = player.fixingDuration ? player.resumeAt || 0 : Math.min(v.currentTime || 0, length || Infinity);
+  refs.current.textContent = formatPlayerClock(now);
+  refs.duration.textContent = formatPlayerClock(length);
+  const played = length ? Math.min(100, (now / length) * 100) : 0;
+  refs.played.style.width = played + "%";
+  refs.thumb.style.left = played + "%";
+  let buffered = 0;
+  try {
+    const ranges = v.buffered;
+    if (ranges && ranges.length && length) buffered = Math.min(100, (ranges.end(ranges.length - 1) / length) * 100);
+  } catch {
+    buffered = 0;
+  }
+  refs.buffered.style.width = buffered + "%";
+  refs.seek.setAttribute("aria-valuemax", String(Math.round(length)));
+  refs.seek.setAttribute("aria-valuenow", String(Math.round(now)));
+  refs.seek.setAttribute("aria-valuetext", formatPlayerClock(now) + " of " + formatPlayerClock(length));
+}
+
+function paintPlayerControls() {
+  const refs = playerRefs();
+  if (!refs || !player.open) return;
+  const v = refs.video;
+  const playing = player.kind === "video" && !v.paused && !v.ended;
+  refs.toggle.innerHTML = v.ended && !v.loop ? PLAYER_ICONS.replay : playing ? PLAYER_ICONS.pause : PLAYER_ICONS.play;
+  refs.toggle.setAttribute("aria-label", playing ? "Pause" : "Play");
+  refs.toggle.title = (playing ? "Pause" : "Play") + " (Space)";
+  refs.root.classList.toggle("is-paused", player.kind === "video" && !playing);
+  const muted = player.prefs.muted || player.prefs.volume === 0;
+  refs.mute.innerHTML = muted ? PLAYER_ICONS.volumeOff : player.prefs.volume < 0.5 ? PLAYER_ICONS.volumeLow : PLAYER_ICONS.volumeHigh;
+  refs.mute.setAttribute("aria-label", muted ? "Unmute" : "Mute");
+  refs.mute.title = (muted ? "Unmute" : "Mute") + " (M)";
+  refs.volume.value = String(muted ? 0 : player.prefs.volume);
+  refs.rate.textContent = formatPlayerRate(player.prefs.rate);
+  refs.loop.setAttribute("aria-pressed", String(player.prefs.loop));
+  const full = document.fullscreenElement === refs.root;
+  refs.full.innerHTML = full ? PLAYER_ICONS.fullOff : PLAYER_ICONS.fullOn;
+  refs.full.setAttribute("aria-label", full ? "Exit full screen" : "Full screen");
+  refs.full.title = (full ? "Exit full screen" : "Full screen") + " (F)";
+  refs.root.classList.toggle("is-full", full);
+  refs.frame.disabled = player.saving || Boolean(player.error) || !(v.videoWidth > 0);
+  refs.frame.textContent = player.saving ? "Saving…" : "Save frame";
+  const near = playerNeighbors();
+  refs.prev.disabled = !near.prev;
+  refs.next.disabled = !near.next;
+  refs.rateMenu.querySelectorAll("[data-player-rate-pick]").forEach((btn) => {
+    btn.setAttribute("aria-checked", String(Number(btn.getAttribute("data-player-rate-pick")) === player.prefs.rate));
+  });
+  paintPlayerTime();
+}
+
+function playerGo(direction) {
+  const near = playerNeighbors();
+  const target = direction < 0 ? near.prev : near.next;
+  if (!target) return;
+  loadPlayerTake(target, {});
+}
+
+// Save frame: the paused picture goes through a canvas to a PNG, and main
+// files it as the next "Screenshot N" in today's folder.
+async function savePlayerFrame() {
+  const refs = playerRefs();
+  if (!refs || player.saving || player.kind !== "video" || !player.take) return;
+  if (!api || typeof api.playerFrameSave !== "function") return;
+  const v = refs.video;
+  if (!(v.videoWidth > 0 && v.videoHeight > 0)) {
+    toast("The frame is not ready yet.", true);
+    return;
+  }
+  const take = player.take;
+  player.saving = true;
+  paintPlayerControls();
+  let result = null;
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = v.videoWidth;
+    canvas.height = v.videoHeight;
+    canvas.getContext("2d").drawImage(v, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("empty frame");
+    const png = new Uint8Array(await blob.arrayBuffer());
+    result = await api.playerFrameSave({ id: take.id, png, atMs: Math.round((v.currentTime || 0) * 1000) });
+  } catch {
+    result = { ok: false, error: "Could not save the frame." };
+  }
+  player.saving = false;
+  if (result && Array.isArray(result.takes)) session.takes = result.takes;
+  if (result && result.ok && result.take) {
+    session.justSavedId = result.take.id;
+    logRecorderEvent("frame saved", result.take.name || "");
+    toast("Frame saved as " + (result.take.name || "a screenshot") + ".");
+    paintTakes();
+  } else {
+    toast((result && result.error) || "Could not save the frame.", true);
+  }
+  paintPlayerControls();
+}
+
+// Delete from the player: let go of the file first (the open <video> holds
+// it), ask through the same dialog as the card, then move to the neighbor
+// or back to the grid. A cancel puts the take back where it was.
+async function deletePlayerTake() {
+  const refs = playerRefs();
+  if (!refs || !player.take || player.deleting || session.deletingId) return;
+  const take = player.take;
+  const near = playerNeighbors();
+  const resumeAt = player.kind === "video" ? refs.video.currentTime || 0 : 0;
+  player.deleting = true;
+  unloadPlayerVideo();
+  await deleteTake(take.id);
+  player.deleting = false;
+  if (!player.open) return;
+  const list = Array.isArray(session.takes) ? session.takes : [];
+  if (list.some((item) => item && item.id === take.id)) {
+    loadPlayerTake(take, { paused: true, resumeAt });
+    return;
+  }
+  const next = [near.next, near.prev].find((item) => item && list.some((other) => other && other.id === item.id));
+  if (next) loadPlayerTake(next, { paused: true });
+  else closePlayer();
+}
+
+function playerSeekFraction(clientX) {
+  const refs = playerRefs();
+  const rect = refs.seek.getBoundingClientRect();
+  if (!rect.width) return 0;
+  return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+}
+
+function onPlayerKey(event) {
+  if (!player.open) return;
+  const refs = playerRefs();
+  if (!refs) return;
+  const target = event.target;
+  const tag = target && target.tagName ? target.tagName.toLowerCase() : "";
+  const key = event.key;
+  if (key === "Escape") {
+    event.preventDefault();
+    if (!refs.rateMenu.hidden || !refs.helpSheet.hidden) {
+      closePlayerMenus();
+      return;
+    }
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+      return;
+    }
+    closePlayer();
+    return;
+  }
+  // A focused control keeps its own keys: Space and Enter press it, and the
+  // volume slider's arrows move it.
+  if ((key === " " || key === "Enter") && (tag === "button" || tag === "input")) return;
+  if (tag === "input" && (key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown")) return;
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  const isVideo = player.kind === "video";
+  let handled = true;
+  switch (key) {
+    case " ":
+    case "k":
+    case "K":
+      if (isVideo) togglePlayer();
+      break;
+    case "j":
+    case "J":
+      if (isVideo) playerSkip(-PLAYER_SKIP_S);
+      break;
+    case "l":
+    case "L":
+      if (isVideo) playerSkip(PLAYER_SKIP_S);
+      break;
+    case "ArrowLeft":
+      if (isVideo) playerSkip(-PLAYER_ARROW_S);
+      else playerGo(-1);
+      break;
+    case "ArrowRight":
+      if (isVideo) playerSkip(PLAYER_ARROW_S);
+      else playerGo(1);
+      break;
+    case ",":
+      if (isVideo) playerStepFrame(-1);
+      break;
+    case ".":
+      if (isVideo) playerStepFrame(1);
+      break;
+    case "Home":
+      if (isVideo) playerSeekTo(0);
+      break;
+    case "End":
+      if (isVideo) playerSeekTo(playerDuration());
+      break;
+    case "ArrowUp":
+      if (isVideo) setPlayerVolume(player.prefs.volume + 0.05);
+      break;
+    case "ArrowDown":
+      if (isVideo) setPlayerVolume(player.prefs.volume - 0.05, { keepMute: true });
+      break;
+    case "m":
+    case "M":
+      if (isVideo) togglePlayerMute();
+      break;
+    case "<":
+      if (isVideo) stepPlayerRate(-1);
+      break;
+    case ">":
+      if (isVideo) stepPlayerRate(1);
+      break;
+    case "r":
+    case "R":
+      if (isVideo) togglePlayerLoop();
+      break;
+    case "f":
+    case "F":
+      togglePlayerFullscreen();
+      break;
+    case "s":
+    case "S":
+      if (isVideo) void savePlayerFrame();
+      break;
+    case "p":
+    case "P":
+    case "PageUp":
+      playerGo(-1);
+      break;
+    case "n":
+    case "N":
+    case "PageDown":
+      playerGo(1);
+      break;
+    case "?":
+      togglePlayerHelp();
+      break;
+    case "+":
+    case "=":
+      if (!isVideo) zoomPictureStep(1);
+      else handled = false;
+      break;
+    case "-":
+    case "_":
+      if (!isVideo) zoomPictureStep(-1);
+      else handled = false;
+      break;
+    case "c":
+    case "C":
+      if (!isVideo) void copyPlayerPicture();
+      else handled = false;
+      break;
+    default:
+      if (isVideo && /^[0-9]$/.test(key)) playerSeekTo(playerDuration() * (Number(key) / 10));
+      else if (!isVideo && key === "0") fitPicture();
+      else if (!isVideo && key === "1") setPictureZoom(1);
+      else handled = false;
+  }
+  if (handled) {
+    event.preventDefault();
+    wakePlayer();
+  }
+}
+
+function togglePlayerHelp() {
+  const refs = playerRefs();
+  if (!refs) return;
+  const show = refs.helpSheet.hidden;
+  closePlayerMenus();
+  refs.helpSheet.hidden = !show;
+  refs.help.setAttribute("aria-expanded", String(show));
+}
+
+// Pictures: Fit shows the whole screenshot (never blown up past 1:1), the
+// wheel and the zoom bar scale it around the pointer, and a picture bigger
+// than the stage drags. Copy puts the PNG on the clipboard through main.
+const PICTURE_ZOOM_MIN = 0.1;
+const PICTURE_ZOOM_MAX = 8;
+const PICTURE_ZOOM_STEP = 1.25;
+// Room under a fitted picture for the zoom bar, so Fit never hides the
+// bottom edge behind it.
+const PICTURE_ZOOM_BAR_H = 56;
+
+function pictureFitScale() {
+  const refs = playerRefs();
+  if (!refs) return 1;
+  const w = refs.image.naturalWidth;
+  const h = refs.image.naturalHeight;
+  const box = refs.picture.getBoundingClientRect();
+  if (!(w > 0 && h > 0 && box.width > 0 && box.height > 0)) return 1;
+  const pad = 24;
+  return Math.min(1, (box.width - pad) / w, (box.height - pad - PICTURE_ZOOM_BAR_H) / h);
+}
+
+function pictureScale() {
+  return player.zoom.mode === "fit" ? pictureFitScale() : player.zoom.scale;
+}
+
+// Keep a panned picture on the stage: it can be dragged only as far as its
+// overflow, and a picture that fits sits in the middle.
+function clampPicturePan() {
+  const refs = playerRefs();
+  if (!refs) return;
+  const scale = pictureScale();
+  const box = refs.picture.getBoundingClientRect();
+  const maxX = Math.max(0, (refs.image.naturalWidth * scale - box.width) / 2);
+  const maxY = Math.max(0, (refs.image.naturalHeight * scale - box.height) / 2);
+  player.zoom.x = Math.min(maxX, Math.max(-maxX, player.zoom.x));
+  if (player.zoom.mode !== "fit") player.zoom.y = Math.min(maxY, Math.max(-maxY, player.zoom.y));
+  refs.image.classList.toggle("can-pan", maxX > 0 || maxY > 0);
+}
+
+function applyPictureZoom() {
+  const refs = playerRefs();
+  if (!refs || player.kind !== "image") return;
+  const scale = pictureScale();
+  const w = refs.image.naturalWidth;
+  const h = refs.image.naturalHeight;
+  if (!(w > 0 && h > 0)) return;
+  if (player.zoom.mode === "fit") {
+    player.zoom.x = 0;
+    player.zoom.y = -PICTURE_ZOOM_BAR_H / 2;
+  }
+  clampPicturePan();
+  refs.image.style.width = w * scale + "px";
+  refs.image.style.height = h * scale + "px";
+  refs.image.style.transform = "translate(calc(-50% + " + player.zoom.x + "px), calc(-50% + " + player.zoom.y + "px))";
+  refs.zoomLevel.textContent = player.zoom.mode === "fit" ? "Fit" : Math.round(scale * 100) + "%";
+  refs.zoomLevel.title = player.zoom.mode === "fit" ? "Fit to window (0)" : Math.round(scale * 100) + "% · click for Fit (0)";
+  refs.zoomActual.setAttribute("aria-pressed", String(player.zoom.mode !== "fit" && Math.abs(scale - 1) < 0.001));
+}
+
+// Zoom to `scale`, keeping the picture point under `anchor` (client coords)
+// where it is; without an anchor the middle stays put.
+function setPictureZoom(scale, anchor) {
+  const refs = playerRefs();
+  if (!refs || player.kind !== "image") return;
+  const from = pictureScale();
+  const to = Math.min(PICTURE_ZOOM_MAX, Math.max(PICTURE_ZOOM_MIN, Number(scale) || 1));
+  const box = refs.picture.getBoundingClientRect();
+  if (anchor && box.width) {
+    // The pointer's offset from the stage middle, in stage pixels.
+    const px = anchor.x - (box.left + box.width / 2);
+    const py = anchor.y - (box.top + box.height / 2);
+    const ratio = to / from;
+    player.zoom.x = px - (px - player.zoom.x) * ratio;
+    player.zoom.y = py - (py - player.zoom.y) * ratio;
+  }
+  player.zoom.mode = "manual";
+  player.zoom.scale = to;
+  applyPictureZoom();
+}
+
+function fitPicture() {
+  player.zoom = { mode: "fit", scale: 1, x: 0, y: 0 };
+  applyPictureZoom();
+}
+
+function zoomPictureStep(direction, anchor) {
+  const from = pictureScale();
+  setPictureZoom(direction > 0 ? from * PICTURE_ZOOM_STEP : from / PICTURE_ZOOM_STEP, anchor);
+}
+
+// Double click: a fitted picture goes to 1:1 under the pointer, anything
+// else goes back to Fit.
+function togglePictureZoom(anchor) {
+  if (player.zoom.mode === "fit" && pictureFitScale() < 0.999) setPictureZoom(1, anchor);
+  else fitPicture();
+}
+
+async function copyPlayerPicture() {
+  if (!player.take || player.kind !== "image" || !api || typeof api.takeCopyImage !== "function") return;
+  let result = null;
+  try {
+    result = await api.takeCopyImage(player.take.id);
+  } catch {
+    result = { ok: false, error: "Could not copy the picture." };
+  }
+  if (result && result.ok) toast("Picture copied.");
+  else toast((result && result.error) || "Could not copy the picture.", true);
+}
+
+function wirePicture() {
+  const refs = playerRefs();
+  if (!refs) return;
+  refs.image.addEventListener("load", () => {
+    refs.root.classList.remove("is-waiting");
+    if (player.take) {
+      const px = refs.image.naturalWidth + " × " + refs.image.naturalHeight + " px";
+      refs.meta.textContent = [px, takeMeta(player.take)].filter(Boolean).join(" · ");
+    }
+    fitPicture();
+  });
+  refs.picture.addEventListener(
+    "wheel",
+    (event) => {
+      if (player.kind !== "image") return;
+      event.preventDefault();
+      zoomPictureStep(event.deltaY < 0 ? 1 : -1, { x: event.clientX, y: event.clientY });
+      wakePlayer();
+    },
+    { passive: false },
+  );
+  refs.picture.addEventListener("pointerdown", (event) => {
+    if (player.kind !== "image" || event.button !== 0) return;
+    if (!refs.image.classList.contains("can-pan")) return;
+    event.preventDefault();
+    player.pan = { id: event.pointerId, x: event.clientX, y: event.clientY, fromX: player.zoom.x, fromY: player.zoom.y, moved: false };
+    refs.root.classList.add("is-panning");
+    try {
+      refs.picture.setPointerCapture(event.pointerId);
+    } catch {
+      /* capture is a nicety */
+    }
+  });
+  refs.picture.addEventListener("pointermove", (event) => {
+    const pan = player.pan;
+    if (!pan || pan.id !== event.pointerId) return;
+    const dx = event.clientX - pan.x;
+    const dy = event.clientY - pan.y;
+    if (Math.abs(dx) + Math.abs(dy) > 2) pan.moved = true;
+    player.zoom.x = pan.fromX + dx;
+    player.zoom.y = pan.fromY + dy;
+    applyPictureZoom();
+  });
+  const endPan = (event) => {
+    const pan = player.pan;
+    if (!pan || pan.id !== event.pointerId) return;
+    player.pan = null;
+    refs.root.classList.remove("is-panning");
+    try {
+      refs.picture.releasePointerCapture(event.pointerId);
+    } catch {
+      /* already released */
+    }
+  };
+  refs.picture.addEventListener("pointerup", endPan);
+  refs.picture.addEventListener("pointercancel", endPan);
+  refs.picture.addEventListener("dblclick", (event) => {
+    if (player.kind !== "image") return;
+    togglePictureZoom({ x: event.clientX, y: event.clientY });
+  });
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(() => {
+      if (player.open && player.kind === "image") applyPictureZoom();
+    }).observe(refs.picture);
+  }
+}
+
+function wirePlayer() {
+  const refs = playerRefs();
+  if (!refs) return;
+  const v = refs.video;
+  wirePicture();
+
+  refs.rateMenu.innerHTML = PLAYER_RATES.map(
+    (rate) =>
+      '<button type="button" role="menuitemradio" data-player-rate-pick="' + rate + '" aria-checked="' + (rate === 1) + '">' +
+      formatPlayerRate(rate) +
+      "</button>",
+  ).join("");
+  refs.toggle.innerHTML = PLAYER_ICONS.play;
+  refs.mute.innerHTML = PLAYER_ICONS.volumeHigh;
+  refs.full.innerHTML = PLAYER_ICONS.fullOn;
+
+  // Media events drive the controls; the controls never guess the state.
+  v.addEventListener("loadedmetadata", () => {
+    if (!Number.isFinite(v.duration) || v.duration <= 0) {
+      startPlayerDurationFix();
+    } else {
+      if (player.resumeAt) {
+        try {
+          v.currentTime = Math.min(player.resumeAt, v.duration);
+        } catch {
+          /* keep the start */
+        }
+      }
+      if (player.wantPlay) playerPlay();
+      else refs.root.classList.remove("is-waiting");
+    }
+    paintPlayerControls();
+  });
+  v.addEventListener("durationchange", () => {
+    if (player.fixingDuration && Number.isFinite(v.duration) && v.duration > 0) finishPlayerDurationFix();
+    paintPlayerTime();
+  });
+  v.addEventListener("loadeddata", paintPlayerControls);
+  v.addEventListener("canplay", () => {
+    if (!player.fixingDuration) refs.root.classList.remove("is-waiting");
+  });
+  v.addEventListener("waiting", () => {
+    if (!v.paused) refs.root.classList.add("is-waiting");
+  });
+  v.addEventListener("playing", () => {
+    refs.root.classList.remove("is-waiting");
+    paintPlayerControls();
+    wakePlayer();
+  });
+  v.addEventListener("play", () => {
+    if (player.fixingDuration) return;
+    flashPlayer("play");
+    paintPlayerControls();
+    wakePlayer();
+  });
+  v.addEventListener("pause", () => {
+    if (player.fixingDuration) return;
+    refs.flash.classList.remove("show");
+    refs.flash.innerHTML = v.ended && !v.loop ? PLAYER_ICONS.replay : PLAYER_ICONS.play;
+    paintPlayerControls();
+    wakePlayer();
+  });
+  v.addEventListener("ended", () => {
+    if (player.fixingDuration) return;
+    player.wantPlay = false;
+    refs.flash.classList.remove("show");
+    refs.flash.innerHTML = PLAYER_ICONS.replay;
+    paintPlayerControls();
+    wakePlayer();
+  });
+  v.addEventListener("timeupdate", queuePlayerTimePaint);
+  v.addEventListener("progress", queuePlayerTimePaint);
+  v.addEventListener("seeked", queuePlayerTimePaint);
+  v.addEventListener("volumechange", paintPlayerControls);
+  v.addEventListener("ratechange", paintPlayerControls);
+  v.addEventListener("error", () => {
+    if (!v.getAttribute("src")) return;
+    const code = v.error && v.error.code;
+    showPlayerError(
+      code === 4
+        ? "This file is not a video Simple Recorder can play."
+        : code === 3
+          ? "This video is damaged or still being written."
+          : "This file could not be played.",
+    );
+    logRecorderEvent("player error", (player.take && player.take.name) + " code=" + code);
+  });
+  refs.image.addEventListener("error", () => {
+    if (refs.image.getAttribute("src")) showPlayerError("This picture could not be opened.");
+  });
+
+  // Stage: click plays or pauses, a double click goes full screen.
+  refs.video.addEventListener("click", () => {
+    clearTimeout(player.clickTimer);
+    player.clickTimer = setTimeout(togglePlayer, 220);
+  });
+  refs.video.addEventListener("dblclick", () => {
+    clearTimeout(player.clickTimer);
+    togglePlayerFullscreen();
+  });
+
+  refs.root.addEventListener("pointermove", wakePlayer);
+  refs.root.addEventListener("pointerdown", wakePlayer);
+  refs.root.addEventListener("click", (event) => {
+    const target = event.target && typeof event.target.closest === "function" ? event.target : null;
+    if (!target) return;
+    if (!target.closest("[data-player-rate]") && !target.closest("[data-player-rate-menu]")) {
+      refs.rateMenu.hidden = true;
+      refs.rate.setAttribute("aria-expanded", "false");
+    }
+    if (!target.closest("[data-player-help]") && !target.closest("[data-player-help-sheet]")) {
+      refs.helpSheet.hidden = true;
+      refs.help.setAttribute("aria-expanded", "false");
+    }
+    if (target.closest("[data-player-close]")) closePlayer();
+    else if (target.closest("[data-player-toggle]")) togglePlayer();
+    else if (target.closest("[data-player-skip]")) playerSkip(Number(target.closest("[data-player-skip]").getAttribute("data-player-skip")) || 0);
+    else if (target.closest("[data-player-mute]")) togglePlayerMute();
+    else if (target.closest("[data-player-loop]")) togglePlayerLoop();
+    else if (target.closest("[data-player-full]")) togglePlayerFullscreen();
+    else if (target.closest("[data-player-prev]")) playerGo(-1);
+    else if (target.closest("[data-player-next]")) playerGo(1);
+    else if (target.closest("[data-player-frame]")) void savePlayerFrame();
+    else if (target.closest("[data-player-delete]")) void deletePlayerTake();
+    else if (target.closest("[data-player-help]")) togglePlayerHelp();
+    else if (target.closest("[data-player-copy]")) void copyPlayerPicture();
+    else if (target.closest("[data-player-zoom-in]")) zoomPictureStep(1);
+    else if (target.closest("[data-player-zoom-out]")) zoomPictureStep(-1);
+    else if (target.closest("[data-player-zoom-fit]")) fitPicture();
+    else if (target.closest("[data-player-zoom-actual]")) setPictureZoom(1);
+    else if (target.closest("[data-player-rate-pick]")) setPlayerRate(Number(target.closest("[data-player-rate-pick]").getAttribute("data-player-rate-pick")));
+    else if (target.closest("[data-player-rate]")) {
+      const show = refs.rateMenu.hidden;
+      closePlayerMenus();
+      refs.rateMenu.hidden = !show;
+      refs.rate.setAttribute("aria-expanded", String(show));
+    } else if (target.closest("[data-player-retry]")) {
+      if (player.take) loadPlayerTake(player.take, { paused: false });
+    } else if (target.closest("[data-player-show]")) {
+      if (player.take && api && typeof api.takeShow === "function") api.takeShow(player.take.id).catch(() => {});
+    } else if (target.closest("[data-player-external]")) {
+      if (player.take && api && typeof api.takeOpen === "function") {
+        playerPause();
+        api.takeOpen(player.take.id).catch(() => {});
+      }
+    }
+  });
+
+  // Seek bar: drag scrubs, hover shows the time under the pointer.
+  refs.seek.addEventListener("pointerdown", (event) => {
+    if (player.kind !== "video" || !playerDuration() || player.fixingDuration) return;
+    event.preventDefault();
+    player.scrubbing = true;
+    player.scrubWasPlaying = !v.paused && !v.ended;
+    refs.seek.classList.add("is-scrubbing");
+    try {
+      refs.seek.setPointerCapture(event.pointerId);
+    } catch {
+      /* capture is a nicety */
+    }
+    if (player.scrubWasPlaying) v.pause();
+    const fraction = playerSeekFraction(event.clientX);
+    playerSeekTo(playerDuration() * fraction);
+    refs.tip.hidden = false;
+    refs.tip.style.left = fraction * 100 + "%";
+    refs.tip.textContent = formatPlayerClock(playerDuration() * fraction);
+  });
+  refs.seek.addEventListener("pointermove", (event) => {
+    if (player.kind !== "video" || !playerDuration()) return;
+    const fraction = playerSeekFraction(event.clientX);
+    refs.tip.hidden = false;
+    refs.tip.style.left = fraction * 100 + "%";
+    refs.tip.textContent = formatPlayerClock(playerDuration() * fraction);
+    if (player.scrubbing) playerSeekTo(playerDuration() * fraction);
+  });
+  const endScrub = (event) => {
+    refs.tip.hidden = true;
+    if (!player.scrubbing) return;
+    player.scrubbing = false;
+    refs.seek.classList.remove("is-scrubbing");
+    try {
+      refs.seek.releasePointerCapture(event.pointerId);
+    } catch {
+      /* already released */
+    }
+    if (player.scrubWasPlaying) playerPlay();
+    wakePlayer();
+  };
+  refs.seek.addEventListener("pointerup", endScrub);
+  refs.seek.addEventListener("pointercancel", endScrub);
+  refs.seek.addEventListener("pointerleave", () => {
+    if (!player.scrubbing) refs.tip.hidden = true;
+  });
+
+  refs.volume.addEventListener("input", () => setPlayerVolume(refs.volume.value));
+
+  document.addEventListener("fullscreenchange", () => {
+    paintPlayerControls();
+    wakePlayer();
+  });
+  document.addEventListener("keydown", onPlayerKey);
 }
 
 // ---------------------------------------------------------------------------
@@ -3210,6 +4332,7 @@ async function boot() {
   wireTheme();
   render();
   wireTakes();
+  wirePlayer();
   document.querySelector("[data-open-folder]")?.addEventListener("click", () => {
     void api.recordingsOpen().catch(() => {});
   });
@@ -3315,8 +4438,128 @@ async function smokePreviewProbe() {
   return out;
 }
 
+// The player probe (smoke only): open the newest video (or the newest take)
+// in the real player, wait for the file to decode, seek once, and report
+// what the controls show. The player is left open so main can capture it.
+async function smokePlayerProbe() {
+  const refs = playerRefs();
+  const takes = Array.isArray(session.takes) ? session.takes : [];
+  const target = takes.find((take) => !isScreenshotTake(take)) || takes[0] || null;
+  const out = {
+    markup: Boolean(refs),
+    takes: takes.length,
+    buttons: refs ? refs.root.querySelectorAll(".player-btn").length : 0,
+    rates: refs ? refs.rateMenu.querySelectorAll("[data-player-rate-pick]").length : 0,
+    shortcuts: refs ? refs.helpSheet.querySelectorAll("dt").length : 0,
+    opened: false,
+  };
+  if (!refs || !target) return out;
+  const shot = takes.find((take) => isScreenshotTake(take));
+  if (shot) {
+    openPlayer(shot.id, { paused: true });
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 5000);
+      const done = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      if (refs.image.complete && refs.image.naturalWidth) done();
+      else {
+        refs.image.addEventListener("load", done, { once: true });
+        refs.image.addEventListener("error", done, { once: true });
+      }
+    });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const fit = refs.image.getBoundingClientRect();
+    const stage = refs.picture.getBoundingClientRect();
+    out.picture = {
+      opened: player.kind === "image" && !refs.picture.hidden,
+      name: refs.name.textContent,
+      natural: refs.image.naturalWidth + "x" + refs.image.naturalHeight,
+      shown: Math.round(fit.width) + "x" + Math.round(fit.height),
+      fitsStage: fit.width <= stage.width + 1 && fit.height <= stage.height + 1,
+      zoom: refs.zoomLevel.textContent,
+      meta: refs.meta.textContent,
+      copy: !refs.copy.hidden,
+      controlsHidden: getComputedStyle(refs.controls).display === "none",
+      error: player.error,
+    };
+    zoomPictureStep(1);
+    out.picture.zoomIn = refs.zoomLevel.textContent;
+    setPictureZoom(1);
+    out.picture.actual = refs.zoomLevel.textContent + " " + Math.round(refs.image.getBoundingClientRect().width) + "px wide";
+    fitPicture();
+    if (new URLSearchParams(location.search).get("smokePlayer") === "picture") return out;
+  }
+  openPlayer(target.id, { paused: true });
+  out.opened = player.open && !refs.root.hidden;
+  out.kind = player.kind;
+  out.name = refs.name.textContent;
+  if (player.kind !== "video") return out;
+  const v = refs.video;
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, 8000);
+    const check = () => {
+      if (player.fixingDuration) return;
+      if (v.readyState < 1 && !player.error) return;
+      clearTimeout(timer);
+      resolve();
+    };
+    for (const name of ["loadedmetadata", "loadeddata", "durationchange", "seeked", "error"]) v.addEventListener(name, check);
+    check();
+  });
+  out.readyState = v.readyState;
+  out.error = player.error;
+  out.duration = Math.round(playerDuration() * 1000) / 1000;
+  out.finiteDuration = Number.isFinite(v.duration);
+  out.size = v.videoWidth + "x" + v.videoHeight;
+  const half = playerDuration() / 2;
+  if (half > 0 && !player.error) {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 3000);
+      v.addEventListener(
+        "seeked",
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+      playerSeekTo(half);
+    });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+  out.currentTime = Math.round(v.currentTime * 1000) / 1000;
+  out.clock = refs.current.textContent + " / " + refs.duration.textContent;
+  out.played = refs.played.style.width;
+  out.saveFrame = !refs.frame.disabled;
+  // Real playback: decode for a moment, then pause where it landed.
+  if (!player.error) {
+    const before = v.currentTime;
+    playerPlay();
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    out.playing = !v.paused && !v.ended;
+    out.advanced = Math.round((v.currentTime - before) * 1000) / 1000;
+    out.playIcon = refs.toggle.getAttribute("aria-label");
+    playerPause();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  out.paused = v.paused;
+  // Save frame: the paused picture goes through the real IPC into the
+  // library, and the list grows by one screenshot.
+  if (!player.error && !refs.frame.disabled) {
+    const count = (session.takes || []).length;
+    await savePlayerFrame();
+    const fresh = (session.takes || []).find((take) => take.id === session.justSavedId);
+    out.frame = { listed: (session.takes || []).length === count + 1, name: fresh ? fresh.name : "", mime: fresh ? fresh.mime : "" };
+    paintPlayerControls();
+  }
+  return out;
+}
+
 if (new URLSearchParams(location.search).has("smoke")) {
   window.__recPreviewProbe = smokePreviewProbe;
+  window.__recPlayerProbe = smokePlayerProbe;
 }
 
 void boot();

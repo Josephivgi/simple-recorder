@@ -4,17 +4,18 @@ const {
   ipcMain,
   dialog,
   protocol,
-  net,
   screen,
   shell,
   globalShortcut,
   nativeTheme,
+  clipboard,
+  nativeImage,
 } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
 const fssync = require("fs");
 const { randomUUID, createHash } = require("crypto");
-const { pathToFileURL, fileURLToPath } = require("url");
+const { fileURLToPath } = require("url");
 const { usableWorkArea } = require("../lib/window-bounds");
 const { removeRecordingFile } = require("../lib/take-files");
 const {
@@ -31,6 +32,9 @@ const { frameLooksBlank } = require("../lib/paint-check");
 const { issueUrl, osLabel } = require("../lib/issue-report");
 const { normalizeTheme, themeSource, themeBackground } = require("../lib/themes");
 const { nextScreenshotName, cropPixelRect, isScreenshot } = require("../lib/screenshot.cjs");
+const { readPlayerPrefs, writePlayerPrefs } = require("../lib/player");
+const { parseRange, rangeResponse } = require("../lib/take-stream");
+const { Readable } = require("stream");
 
 const disposers = [];
 
@@ -1737,6 +1741,7 @@ function createWindow() {
     // ?theme= lets the page paint in its theme before any IPC is up.
     const query = { theme: savedTheme() };
     if (SMOKE) query.smoke = "1";
+    if (SMOKE && process.env.REC_SMOKE_PLAYER) query.smokePlayer = String(process.env.REC_SMOKE_PLAYER);
     win.loadFile(indexFile, { query }).catch((error) => logCrash("loadApp loadFile", (error && (error.stack || error.message)) || error));
   };
   win.webContents.on("render-process-gone", (_event, details) => {
@@ -1869,11 +1874,31 @@ async function runSmoke(win) {
         .catch((error) => ({ error: String((error && error.message) || error) })),
       new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 12000)),
     ]);
+    // The player probe opens the newest take in the built-in player and
+    // leaves it open; REC_SMOKE_SHOT names a PNG to capture the window into.
+    const playerProbe = await Promise.race([
+      win.webContents
+        .executeJavaScript(
+          "typeof window.__recPlayerProbe === 'function' ? window.__recPlayerProbe() : { error: 'no probe' }",
+        )
+        .catch((error) => ({ error: String((error && error.message) || error) })),
+      new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 15000)),
+    ]);
+    if (process.env.REC_SMOKE_SHOT) {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const shot = await win.webContents.capturePage();
+        await fs.writeFile(process.env.REC_SMOKE_SHOT, shot.toPNG());
+      } catch (error) {
+        playerProbe.shotError = String((error && error.message) || error);
+      }
+    }
     process.stdout.write(
       "SMOKE " +
         JSON.stringify({
           ok: true,
           takes: takes.length,
+          player: playerProbe,
           update: update
             ? {
                 installMode: update.installMode,
@@ -1900,6 +1925,8 @@ app.whenReady().then(async () => {
   try {
     bootDeferredMain();
     // Take files play in the page through take://file/<encoded abs path>.
+    // Served in byte ranges straight from disk: the player seeks by asking
+    // for slices, and a long recording's duration comes from its tail.
     protocol.handle("take", async (request) => {
       try {
         const url = new URL(request.url);
@@ -1910,7 +1937,14 @@ app.whenReady().then(async () => {
         if (resolved !== root && !resolved.startsWith(root + path.sep)) {
           return new Response("Bad request", { status: 400 });
         }
-        return await net.fetch(pathToFileURL(resolved).toString());
+        const info = await fs.stat(resolved).catch(() => null);
+        if (!info || !info.isFile()) return new Response("Not found", { status: 404 });
+        const plan = rangeResponse(parseRange(request.headers.get("range"), info.size), info.size, resolved);
+        if (plan.status === 416 || request.method === "HEAD" || plan.length === 0) {
+          return new Response(null, { status: plan.status, headers: plan.headers });
+        }
+        const file = fssync.createReadStream(resolved, { start: plan.start, end: plan.end });
+        return new Response(Readable.toWeb(file), { status: plan.status, headers: plan.headers });
       } catch {
         return new Response("Bad request", { status: 400 });
       }
@@ -2215,6 +2249,56 @@ ipcMain.handle("take-open", async (_event, payload) => {
   return { ok: false };
 });
 
+// The built-in player. Takes play in the page over take://; main only keeps
+// the player's prefs (volume, mute, speed, loop) in kv so they survive a
+// restart, and writes the frame the player asks to keep.
+ipcMain.handle("player-prefs-get", () => (db ? readPlayerPrefs(db) : readPlayerPrefs({ kvGet: (_k, d) => d })));
+
+ipcMain.handle("player-prefs-set", (_event, payload) => {
+  if (!db) return { ok: false };
+  return { ok: true, prefs: writePlayerPrefs(db, payload) };
+});
+
+// Copy: a screenshot goes onto the clipboard as an image, so it can be
+// pasted into a chat or a document without opening another app.
+ipcMain.handle("take-copy-image", async (_event, payload) => {
+  if (!db) return { ok: false, error: "The recorder is still starting." };
+  const take = db.getTake(payload && payload.id);
+  if (!take || !isScreenshot(take) || !fssync.existsSync(take.path)) return { ok: false, error: "That screenshot is gone." };
+  try {
+    const image = nativeImage.createFromPath(take.path);
+    if (!image || image.isEmpty()) return { ok: false, error: "The picture could not be read." };
+    clipboard.writeImage(image);
+    logRecorder("screenshot copied", take.name);
+    return { ok: true };
+  } catch (error) {
+    logRecorder("screenshot copy failed", (error && error.message) || error);
+    return { ok: false, error: "Could not copy the picture." };
+  }
+});
+
+// Save frame: the page draws the paused frame to a canvas and sends the PNG
+// bytes; the file lands in today's folder as the next "Screenshot N".
+const PLAYER_FRAME_MAX_BYTES = 64 * 1024 * 1024;
+ipcMain.handle("player-frame-save", async (_event, payload) => {
+  if (!db) return { ok: false, error: "The recorder is still starting." };
+  const raw = payload && payload.png;
+  const png = Buffer.isBuffer(raw) ? raw : raw instanceof Uint8Array || raw instanceof ArrayBuffer ? Buffer.from(raw) : null;
+  if (!png || !png.length) return { ok: false, error: "The frame came back empty." };
+  if (png.length > PLAYER_FRAME_MAX_BYTES) return { ok: false, error: "The frame is too large to save." };
+  // PNG signature: anything else is not a frame the page drew.
+  if (png.readUInt32BE(0) !== 0x89504e47) return { ok: false, error: "The frame is not a PNG." };
+  const take = db.getTake(payload && payload.id);
+  const at = Number(payload && payload.atMs);
+  const detail = "frame of " + (take ? take.name : "a take") + (Number.isFinite(at) ? " at " + Math.round(at) + "ms" : "") + " player";
+  try {
+    return await saveImageTake(png, detail);
+  } catch (error) {
+    logRecorder("frame save failed", (error && error.message) || error);
+    return { ok: false, error: "Could not save the frame." };
+  }
+});
+
 // Screenshots: one PNG of the screen a take would record, with the same crop,
 // saved next to the takes in today's folder and listed with them. The app's
 // own window is kept out of the picture by excluding it from capture for the
@@ -2252,6 +2336,13 @@ async function saveScreenshot(display, crop, from) {
   const shot = rect.width === size.width && rect.height === size.height ? image : image.crop(rect);
   const png = shot.toPNG();
   if (!png || !png.length) return { ok: false, error: "The screen capture came back empty." };
+  return saveImageTake(png, rect.width + "x" + rect.height + " " + from);
+}
+
+// One PNG into today's folder, named like the other screenshots and listed
+// with the takes. Studio's Screenshot, the bar's camera, and the player's
+// Save frame all end here.
+async function saveImageTake(png, detail) {
   const dir = await takeDayDir(new Date());
   const dest = await uniqueTakePath(dir, nextScreenshotName(db.listTakes(200)), ".png");
   if (!dest) return { ok: false, error: "Could not name the screenshot." };
@@ -2267,7 +2358,7 @@ async function saveScreenshot(display, crop, from) {
     createdAt: new Date().toISOString(),
   };
   db.insertTake(take);
-  logRecorder("screenshot saved", take.name + " " + rect.width + "x" + rect.height + " " + from);
+  logRecorder("screenshot saved", take.name + " " + detail);
   return { ok: true, take: withDayFolders([take])[0], takes: takesForPage() };
 }
 
