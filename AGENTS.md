@@ -131,8 +131,9 @@ pushes from the dev repo to the public repo on its own.
 - `scripts/uninstall.cjs`: the uninstaller, run by the installed launcher as
   plain Node (`ELECTRON_RUN_AS_NODE=1`). Removes shortcuts, the registry key,
   and then the folder; the folder is deleted straight away when the
-  uninstaller runs from outside the install, otherwise a detached `cmd.exe`
-  deletes it once the running .exe unlocks. Recordings under
+  uninstaller runs from outside the install, otherwise a hidden PowerShell started through WMI
+  deletes it once the running .exe unlocks (every 2 s for up to 10 minutes;
+  it starts no console programs, so no window flashes). Recordings under
   `Videos\Simple recorder` are never touched; `--purge-data` also removes
   `%APPDATA%\Simple Recorder`, and `--no-shortcuts` / `--no-registry` keep a
   test run from touching the real ones.

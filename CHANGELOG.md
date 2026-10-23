@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.0 (2026-10-23)
+
+### Fixed
+
+- Uninstalling Simple Recorder from Settings > Apps works again. Before, it stopped without removing the app.
+- Uninstalling no longer flashes command windows, and the app folder is removed even when Windows holds on to it for a while after the app closes.
+
 ## v1.2.9 (2026-10-18)
 
 ### New

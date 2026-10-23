@@ -23,7 +23,7 @@ const fssync = require("fs");
 const os = require("os");
 const path = require("path");
 const readline = require("readline");
-const { spawn, execFileSync } = require("child_process");
+const { execFileSync } = require("child_process");
 const { APP_NAME, UNINSTALL_KEY, MANIFEST_NAME } = require("../lib/install-layout");
 
 const PS1_REMOVE_SHORTCUTS = [
@@ -67,7 +67,7 @@ function parseArgs(argv) {
 // The uninstaller lives at <installDir>\resources\app\scripts\uninstall.cjs.
 function installDirFor(dirOverride) {
   if (dirOverride) return dirOverride;
-  return path.resolve(__dirname, "..", "..");
+  return path.resolve(__dirname, "..", "..", "..");
 }
 
 // Never rmdir a folder that is not ours: it must carry the install manifest
@@ -115,16 +115,41 @@ function removeRegistry() {
   }
 }
 
-// The running exe is locked, so hand the folder deletion to a cmd.exe that
-// outlives this process.
+// The running exe is locked, so the folder is deleted by a process that
+// outlives this one. Windows (often the virus scanner) can hold the exe for
+// minutes after this process ends, so it tries every 2 seconds for up to 10
+// minutes until the folder is gone.
+//
+// It is a hidden PowerShell started through WMI (Win32_Process.Create):
+// - a normal child is in Node's kill-on-exit job and dies with this process;
+// - a detached child has no console, and Windows PowerShell then exits
+//   without running, while a detached cmd.exe opens a window for every
+//   console program it starts (the old ping delay flashed one each time).
+// WMI starts it outside the job, with its own console, window hidden. The
+// loop goes in -EncodedCommand so no folder name can break its quoting. It
+// runs from the temp folder, never from inside the folder it deletes.
 function scheduleFolderRemoval(dir) {
-  const command = 'ping -n 3 127.0.0.1 >nul & rmdir /s /q "' + dir + '"';
-  const child = spawn("cmd.exe", ["/c", command], {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-  });
-  child.unref();
+  const quoted = "'" + dir.split("'").join("''") + "'";
+  const loop =
+    "for ($i = 0; $i -lt 300 -and (Test-Path -LiteralPath " + quoted + "); $i++) { Start-Sleep -Seconds 2; " +
+    "Remove-Item -LiteralPath " + quoted + " -Recurse -Force -ErrorAction SilentlyContinue }";
+  const encoded = Buffer.from(loop, "utf16le").toString("base64");
+  const launch =
+    "$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }; " +
+    "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = " +
+    "'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " + encoded + "'; " +
+    "CurrentDirectory = $env:TEMP; ProcessStartupInformation = $si }; exit $r.ReturnValue";
+  try {
+    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", launch], {
+      cwd: os.tmpdir(),
+      timeout: 30000,
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function appDataDir() {
