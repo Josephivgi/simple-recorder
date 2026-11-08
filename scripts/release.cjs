@@ -9,6 +9,7 @@ const fs = require("fs/promises");
 const fssync = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { createHash } = require("crypto");
 const { createUpdateBundle, normalizeVersion, formatTag, DEFAULT_REPO } = require("../lib/updater");
 const { buildSetupExe } = require("./pack-setup.cjs");
 const { runGate } = require("./security-gate.cjs");
@@ -22,6 +23,37 @@ function bumpSemver(version, kind) {
   if (kind === "major") return `${maj + 1}.0.0`;
   if (kind === "minor") return `${maj}.${min + 1}.0`;
   return `${maj}.${min}.${pat + 1}`;
+}
+
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256");
+    fssync.createReadStream(file)
+      .on("error", reject)
+      .on("data", (chunk) => hash.update(chunk))
+      .on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+// latest.json. setupAsset/setupSha256 are only present when the setup .exe was
+// built next to the update bundle, so a client never trusts a stale hash.
+function buildManifest({ version, tag, assetName, bundle, setup }) {
+  const manifest = {
+    name: "Simple Recorder",
+    version,
+    tag,
+    assetName,
+    size: bundle.size,
+    sha256: bundle.sha256,
+    filesCount: bundle.filesCount,
+    publishedAt: new Date().toISOString(),
+  };
+  if (setup && setup.setupName && setup.sha256) {
+    manifest.setupAsset = setup.setupName;
+    manifest.setupSize = setup.size;
+    manifest.setupSha256 = setup.sha256;
+  }
+  return manifest;
 }
 
 function parseArgs(argv) {
@@ -62,26 +94,19 @@ async function main() {
 
   await fs.mkdir(DIST_DIR, { recursive: true });
   const bundle = await createUpdateBundle(ROOT, assetPath, { version });
-  const manifest = {
-    name: "Simple Recorder",
-    version,
-    tag,
-    assetName,
-    size: bundle.size,
-    sha256: bundle.sha256,
-    filesCount: bundle.filesCount,
-    publishedAt: new Date().toISOString(),
-  };
-  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
   process.stdout.write(`Packed ${assetName} (${bundle.size} bytes, sha256=${bundle.sha256})\n`);
 
   // The downloadable setup .exe needs the Windows Electron runtime, so it is
-  // only built where npm install produced node_modules/electron/dist.
+  // only built where npm install produced node_modules/electron/dist. It is
+  // built before latest.json so the manifest can carry its SHA-256: the setup
+  // is unsigned for now, and this hash (with the GitHub asset digest) is what
+  // the JWorkspace store and the in-app updater check before running it.
   let setup = null;
   if (fssync.existsSync(path.join(ROOT, "node_modules", "electron", "dist", "electron.exe"))) {
     setup = await buildSetupExe(version);
     if (setup.ok) {
-      process.stdout.write(`Packed ${setup.setupName} (${setup.size} bytes)\n`);
+      setup.sha256 = await sha256File(setup.setupPath);
+      process.stdout.write(`Packed ${setup.setupName} (${setup.size} bytes, sha256=${setup.sha256})\n`);
     } else {
       process.stdout.write(`Setup skipped: ${setup.error}\n`);
       setup = null;
@@ -89,6 +114,9 @@ async function main() {
   } else {
     process.stdout.write("Setup skipped: no Windows Electron runtime here.\n");
   }
+
+  const manifest = buildManifest({ version, tag, assetName, bundle, setup });
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
 
   if (args.packOnly) return;
 
@@ -145,4 +173,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { bumpSemver, parseArgs };
+module.exports = { bumpSemver, buildManifest, parseArgs, sha256File };

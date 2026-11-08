@@ -17,6 +17,7 @@ The button downloads `SimpleRecorder-Setup.exe`, always the newest version. Olde
 - **Start delay** (3, 5, or 10 seconds) and **auto stop** (5, 15, or 30 minutes).
 - **Stop from anywhere** with `Ctrl+Shift+Alt+S` while a take is rolling.
 - **Takes page:** every recording grouped by the day it was made, with a preview and buttons to open it, show it in its folder, or delete it.
+- **Screenshots page:** capture the whole screen, an area you draw, or one window. Screenshots can go straight to the clipboard, and they are listed by day with Copy, View, and Delete.
 - **Default quality** in Settings, so every new take starts at the height you want.
 - **Updates in one click.**
 
@@ -25,6 +26,22 @@ The button downloads `SimpleRecorder-Setup.exe`, always the newest version. Olde
 ## Install on Windows
 
 You don't need administrator rights. Simple Recorder installs for your Windows user only.
+
+**Quickest way: one command.**
+
+Open PowerShell and run:
+
+```powershell
+irm https://raw.githubusercontent.com/Josephivgi/simple-recorder/main/install.ps1 | iex
+```
+
+It asks yes or no for each JSystems app (Simple Recorder, JAgents, JPerformance, JServer), then downloads the ones you picked from their latest GitHub release, adds them to the Start Menu, and pins them to the taskbar. No administrator rights are needed, and Windows does not show the "Windows protected your PC" warning. The first time, Windows asks once for permission to add taskbar pins. To install all of them with no questions:
+
+```powershell
+$env:JSYSTEMS_APPS='all'; irm https://raw.githubusercontent.com/Josephivgi/simple-recorder/main/install.ps1 | iex
+```
+
+Or use the setup:
 
 **1. Download.** Click **Download for Windows** above to get `SimpleRecorder-Setup.exe`.
 

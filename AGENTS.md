@@ -1,4 +1,4 @@
-# Simple Recorder
+# Simple Recorder V67
 
 Standalone screen recorder for Windows: a launcher page plus a floating
 always-on-top bar that owns target (Auto / Area / Window), delay, FPS, sound,
@@ -50,15 +50,28 @@ pushes from the dev repo to the public repo on its own.
   migration that moves a loose take into its day folder (move, verify, then
   let the caller re-point the row; never deletes).
 - `lib/screenshot.cjs`: screenshot naming (`Screenshot N`) and the crop to
-  pixel-rect math. The capture lives in main (`saveScreenshot`): Studio's
-  Screenshot button (`screenshot-take`) and the bar's camera button
-  (`overlay-screenshot`, shown in setup and while recording) both grab one
-  full-resolution frame of the take's screen through desktopCapturer, crop it
-  the way the take is cropped, and write a PNG into today's day folder. The
-  row goes in `takes` with `mime` `image/png`, so the Takes page lists it
-  with the videos (an image card; View opens it in the built-in viewer). The
-  main window is excluded from capture (`setContentProtection`) for the grab
-  instead of hidden, so nothing flickers; the bar and strips already are.
+  pixel-rect math. The capture lives in main (`saveScreenshot(spec)`), and
+  two things call it: the Screenshots page (`screenshot-take` with a
+  `mode`) and the bar's camera button (`overlay-screenshot`, the take's
+  screen and crop). Full screen is the screen
+  under the pointer; Area is a crop of the display it was drawn on (the same
+  `page-pick-area` picker as the studio); Window is one window's own pixels
+  (`captureWindowImage` in media-capture: a desktopCapturer window source
+  asked for at the window's real size from `lib/window-rect.cjs`, so covered
+  parts still show). Those desktopCapturer paths are the fallback: they
+  enumerate every source and can take seconds on a busy machine. The fast
+  paths: Full screen and Area go through `lib/screen-copy.cjs`, one hidden
+  PowerShell helper (GDI CopyFromScreen, no pointer in the picture, like
+  Print Screen) that starts with the launch prewarm, takes JSON lines on
+  stdin, writes the PNG to a temp file, and quits after 10 idle minutes or
+  with the app. Window takes one frame of that window's stream in a hidden
+  page (`electron/screen-grab.cjs` + `renderer/grab.{html,js}`, its own
+  `rec-grab` session), which also crops and encodes the PNG off the main
+  process; the page warms it when a window is picked. Every save is a PNG in today's day folder with a `takes`
+  row of `mime` `image/png`. A second identical request while one is saving
+  shares its result (a double-click is one picture); a different one queues.
+  The main window is excluded from capture (`setContentProtection`) for a
+  screen grab instead of hidden, so nothing flickers.
 - `lib/player.js` + `lib/take-stream.js`: the built-in player. Play or View
   on a Takes card (or its thumbnail) opens the take over the whole window
   instead of handing the file to an outside app. The `<video>` element
@@ -142,7 +155,14 @@ pushes from the dev repo to the public repo on its own.
   `installed` mode.
 - `scripts/security-gate.cjs`: the release security gate (see Releases).
 - `scripts/promote.cjs`: promotes a dev commit to the public repo.
-- `renderer/index.html` + `app.js` + `app.css`: three pages. Studio is
+- `renderer/index.html` + `app.js` + `app.css`: four pages. Screenshots is
+  its own page: a Capture choice (Full screen / Area / Window, with Draw
+  area or a window picker plus Refresh under it), Copy to clipboard and Open after saving switches, one Take screenshot
+  button, and the screenshot gallery by day folder (Show in folder, Copy,
+  View, Delete). Its choices are kv prefs (`shotMode`,
+  `shotCopy`, `shotOpen`, `shotArea`) through `shot-prefs-get/set`. Takes
+  lists videos only; the player's prev/next stays within the kind it opened
+  (pictures or videos) and its back button names that page. Studio is
   Source across the full top (action buttons plus the crop preview) over
   two rows of setting boxes: Microphone, Frame rate, Start delay, File
   format (MP4 only, with a disabled WebM placeholder), Quality (the output
@@ -223,7 +243,13 @@ pushes from the dev repo to the public repo on its own.
   region is rendered as large as the frame allows and never cut, which is the
   check that the preview is not showing the whole desktop. The page installs
   that probe only when it is loaded with `?smoke=1`, so a normal launch
-  carries no debug hook. If Electron fails
+  carries no debug hook. `shots` reports the Screenshots page. Smoke env:
+  `REC_SMOKE_PAGE=<page>` ends on that page, and `REC_SMOKE_TAKE_SHOT=<n>` presses
+  Take screenshot n times and reports each press-to-card time
+  (`REC_SMOKE_SHOT_WAIT_MS` waits first), `REC_SMOKE_SHOT_MODE=window` or
+  `area` also times one window or area screenshot, and the log line
+  `screenshot saved` carries each stage's time; `boot` has launch timings. With `REC_SMOKE_SHOT` the window renders offscreen, since a hidden
+  window stops painting and the capture would be stale. If Electron fails
   with `protocol` undefined, `ELECTRON_RUN_AS_NODE` is set in the shell;
   clear it.
 - `npm run gate`: the security gate over the working tree and its history.

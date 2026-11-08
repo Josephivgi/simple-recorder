@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld("rec", {
   playerFrameSave: (payload) => ipcRenderer.invoke("player-frame-save", payload || {}),
   takeCopyImage: (id) => ipcRenderer.invoke("take-copy-image", { id }),
   screenshotTake: (payload) => ipcRenderer.invoke("screenshot-take", payload || {}),
+  screenshotWindows: (payload) => ipcRenderer.invoke("screenshot-windows", payload || {}),
+  screenshotWarm: (payload) => ipcRenderer.invoke("screenshot-warm", payload || {}),
+  shotPrefsGet: () => ipcRenderer.invoke("shot-prefs-get"),
+  shotPrefsSet: (patch) => ipcRenderer.invoke("shot-prefs-set", patch || {}),
   onScreenshotSaved: (handler) => {
     const listen = (_event, payload) => handler(payload);
     ipcRenderer.on("screenshot-saved", listen);

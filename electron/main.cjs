@@ -10,6 +10,7 @@ const {
   nativeTheme,
   clipboard,
   nativeImage,
+  session,
 } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
@@ -56,6 +57,8 @@ function shutdownMainProcess() {
   if (mainShutdownDone) return;
   mainShutdownDone = true;
   destroyCountdownOverlay();
+  screenGrab.dispose();
+  screenCopy.dispose();
   for (const dispose of disposers) {
     try {
       dispose();
@@ -748,6 +751,9 @@ function displayById(id) {
 // An area pick started from the studio page, before any bar is open. The
 // picker answers the page directly instead of the bar session.
 let pageAreaPick = null;
+function pickPurpose() {
+  return pageAreaPick && pageAreaPick.purpose === "screenshot" ? "screenshot" : "record";
+}
 
 function takePageAreaPick() {
   const pick = pageAreaPick;
@@ -804,7 +810,7 @@ function closeAreaPicker() {
   pickerBlurTimer = null;
   if (!win || win.isDestroyed()) return;
   try {
-    win.webContents.send("area-pick-reset", { mode: pickerMode });
+    win.webContents.send("area-pick-reset", { mode: pickerMode, purpose: pickPurpose() });
   } catch (_) {}
   win.hide();
 }
@@ -813,7 +819,7 @@ function showAreaPicker(win) {
   if (!win || win.isDestroyed() || areaPicker !== win) return;
   areaPickerGesture = false;
   try {
-    win.webContents.send("area-pick-reset", { mode: pickerMode });
+    win.webContents.send("area-pick-reset", { mode: pickerMode, purpose: pickPurpose() });
   } catch (_) {}
   try {
     win.setAlwaysOnTop(true, "screen-saver");
@@ -1035,6 +1041,9 @@ function prewarmRecorderWindows() {
     () => {
       if (mediaCapture && typeof mediaCapture.warmCaptureSources === "function") mediaCapture.warmCaptureSources();
     },
+    // The screen helper for Full screen and Area screenshots takes a second
+    // or more to start; start it now so the first screenshot is quick.
+    () => void screenCopy.warm(),
     ensureCountdownOverlay,
     ensureCountdownFrame,
     ensureAreaPickerWindow,
@@ -1106,7 +1115,8 @@ function startPageAreaPick(event, payload) {
     const display =
       displayById(payload && payload.displayId) ||
       (main && !main.isDestroyed() ? screen.getDisplayMatching(main.getBounds()) : screen.getPrimaryDisplay());
-    const pick = { resolve, display, main, minimized: false };
+    const purpose = payload && payload.purpose === "screenshot" ? "screenshot" : "record";
+    const pick = { resolve, display, main, minimized: false, purpose };
     pageAreaPick = pick;
     pickerMode = "area";
     areaPickerBounds = display.bounds;
@@ -1720,6 +1730,10 @@ function createWindow() {
       // Chromium throttles a hidden or occluded window, which would stall the
       // take machinery, so the window is never background-throttled.
       backgroundThrottling: false,
+      // A smoke run that captures the page renders offscreen: a hidden
+      // window stops painting after its first frames, so the capture would
+      // be stale, and an offscreen one never appears on the desktop.
+      ...(SMOKE && process.env.REC_SMOKE_SHOT ? { offscreen: true } : {}),
     },
   });
   mediaCapture.wireMediaCapture(win);
@@ -1793,6 +1807,7 @@ function createWindow() {
     if (!GPU_SAFE) relaunchApp("blank window", [GPU_SAFE_ARG]);
   };
   win.webContents.on("did-finish-load", () => {
+    bootMark("loaded");
     rendererReloadInFlight = false;
     rendererReloadTries = 0;
     if (SMOKE) runSmoke(win);
@@ -1800,6 +1815,8 @@ function createWindow() {
     if (paintAttempt > 0 && win.isVisible()) schedulePaintCheck();
   });
   win.once("ready-to-show", () => {
+    bootMark("shown");
+    logRecorder("boot", Object.keys(bootMarks).map((k) => k + "=" + bootMarks[k] + "ms").join(" "));
     try {
       win.setContentProtection(true);
     } catch (_) {}
@@ -1828,6 +1845,8 @@ function createWindow() {
   win.on("closed", () => {
     logCrash("main-window-closed", "main window destroyed");
     destroyCountdownOverlay();
+    screenGrab.dispose();
+    screenCopy.dispose();
   });
   loadApp();
 }
@@ -1884,9 +1903,71 @@ async function runSmoke(win) {
         .catch((error) => ({ error: String((error && error.message) || error) })),
       new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 15000)),
     ]);
+    // REC_SMOKE_PAGE=screenshots ends on that page, for REC_SMOKE_SHOT.
+    if (process.env.REC_SMOKE_PAGE) {
+      await win.webContents
+        .executeJavaScript(
+          "(() => { const p = document.querySelector('[data-player-close]'); if (p && !document.querySelector('[data-player]').hidden) p.click();" +
+            " const t = document.querySelector('[data-page=" + JSON.stringify(String(process.env.REC_SMOKE_PAGE)) + "]'); if (t) t.click(); })()",
+        )
+        .catch(() => {});
+    }
+    const shots = await win.webContents
+      .executeJavaScript(
+        "({ tab: Boolean(document.querySelector('[data-page=\"screenshots\"]'))," +
+          " page: (document.querySelector('[data-page][aria-selected=\"true\"]') || {}).textContent || ''," +
+          " modes: document.querySelectorAll('[data-shot-mode]').length," +
+          " take: Boolean(document.querySelector('[data-shot-take]'))," +
+          " cards: document.querySelectorAll('[data-shots] .take-card').length," +
+          " takesCards: document.querySelectorAll('[data-takes] .take-card').length," +
+          " studioButton: Boolean(document.querySelector('[data-source-shot]')) })",
+      )
+      .catch((error) => ({ error: String((error && error.message) || error) }));
+    // REC_SMOKE_TAKE_SHOT=<n> presses Take screenshot on the Screenshots page
+    // n times (1 if just "1") and reports each press-to-card time.
+    // REC_SMOKE_SHOT_WAIT_MS waits on the page before the first press.
+    if (Number(process.env.REC_SMOKE_TAKE_SHOT) > 0) {
+      // A real launch caches the source list soon after start
+      // (prewarmRecorderWindows, which smoke skips); do the same here.
+      if (mediaCapture) mediaCapture.warmCaptureSources();
+      const n = Math.min(10, Math.max(1, Math.round(Number(process.env.REC_SMOKE_TAKE_SHOT))));
+      shots.taken = await win.webContents
+        .executeJavaScript(
+          "(async () => { document.querySelector('[data-page=\"screenshots\"]').click(); const times = []; let name = '';" +
+            " await new Promise((r) => setTimeout(r, " + Math.max(0, Math.min(10000, Number(process.env.REC_SMOKE_SHOT_WAIT_MS) || 0)) + "));" +
+            " for (let i = 0; i < " + n + "; i += 1) { const before = document.querySelectorAll('[data-shots] .take-card').length; const t0 = performance.now();" +
+            " document.querySelector('[data-shot-take]').click();" +
+            " while (document.querySelectorAll('[data-shots] .take-card').length <= before) { if (performance.now() - t0 > 30000) return { ok: false, times }; await new Promise((r) => setTimeout(r, 5)); }" +
+            " times.push(Math.round(performance.now() - t0)); name = document.querySelector('[data-shots] .take-card .take-name').textContent;" +
+            " while (document.querySelector('[data-shot-take]').disabled) await new Promise((r) => setTimeout(r, 5)); }" +
+            " return { ok: true, times, name, cards: document.querySelectorAll('[data-shots] .take-card').length, takesCards: document.querySelectorAll('[data-takes] .take-card').length }; })()",
+        )
+        .catch((error) => ({ error: String((error && error.message) || error) }));
+    }
+    // REC_SMOKE_SHOT_MODE=window takes one window screenshot of the first
+    // open window (the page's list is empty in smoke) and times it.
+    if (process.env.REC_SMOKE_SHOT_MODE === "window" && mediaCapture) {
+      try {
+        const names = await mediaCapture.listCaptureNames();
+        const pick = names.windows[0];
+        const t0 = Date.now();
+        const res = pick ? await takeScreenshotSpec({ from: "smoke", window: { sourceId: pick.id, title: pick.name } }) : { ok: false, error: "no windows" };
+        shots.window = { ok: Boolean(res.ok), ms: Date.now() - t0, name: pick ? pick.name : "", error: res.error || "" };
+      } catch (error) {
+        shots.window = { error: String((error && error.message) || error) };
+      }
+    }
+    // REC_SMOKE_SHOT_MODE=area takes the middle quarter of the main screen.
+    if (process.env.REC_SMOKE_SHOT_MODE === "area") {
+      const t0 = Date.now();
+      const res = await takeScreenshotSpec({ from: "smoke", display: screen.getPrimaryDisplay(), crop: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 } });
+      shots.area = { ok: Boolean(res.ok), ms: Date.now() - t0, error: res.error || "" };
+    }
     if (process.env.REC_SMOKE_SHOT) {
       try {
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        // A hidden window keeps its last frame until asked to paint again.
+        win.webContents.invalidate();
+        await new Promise((resolve) => setTimeout(resolve, process.env.REC_SMOKE_PAGE ? 1200 : 300));
         const shot = await win.webContents.capturePage();
         await fs.writeFile(process.env.REC_SMOKE_SHOT, shot.toPNG());
       } catch (error) {
@@ -1911,6 +1992,7 @@ async function runSmoke(win) {
             : null,
           paint: Object.assign({}, paint, { gpu: gpuSummary() }),
           cropPreview,
+          shots,
           info,
         }) +
         "\n",
@@ -1921,9 +2003,18 @@ async function runSmoke(win) {
   setTimeout(() => app.exit(0), 100);
 }
 
+// Launch timings (ms since the process started), logged once the window
+// shows, so a slow start can be told apart from a slow page.
+const bootMarks = {};
+function bootMark(name) {
+  if (!(name in bootMarks)) bootMarks[name] = Math.round(process.uptime() * 1000);
+}
+
 app.whenReady().then(async () => {
+  bootMark("ready");
   try {
     bootDeferredMain();
+    bootMark("db");
     // Take files play in the page through take://file/<encoded abs path>.
     // Served in byte ranges straight from disk: the player seeks by asking
     // for slices, and a long recording's duration comes from its tail.
@@ -1954,6 +2045,7 @@ app.whenReady().then(async () => {
     app.on("child-process-gone", (_event, details) => {
       if (details && details.reason !== "clean-exit") logCrash("child-process-gone", JSON.stringify(details));
     });
+    bootMark("window");
     createWindow();
     void Promise.resolve(mediaCapture.restoreOnReady()).catch((error) =>
       logCrash("startup restore", (error && error.stack || error.message) || error),
@@ -2262,7 +2354,7 @@ ipcMain.handle("player-prefs-set", (_event, payload) => {
 // Copy: a screenshot goes onto the clipboard as an image, so it can be
 // pasted into a chat or a document without opening another app.
 ipcMain.handle("take-copy-image", async (_event, payload) => {
-  if (!db) return { ok: false, error: "The recorder is still starting." };
+  if (!db) return { ok: false, error: "Simple Recorder is still starting." };
   const take = db.getTake(payload && payload.id);
   if (!take || !isScreenshot(take) || !fssync.existsSync(take.path)) return { ok: false, error: "That screenshot is gone." };
   try {
@@ -2306,9 +2398,70 @@ ipcMain.handle("player-frame-save", async (_event, payload) => {
 // on screen hides or flickers.
 const SCREENSHOT_SETTLE_MS = 120;
 let screenshotInflight = null;
+// Fast paths. Full screen and Area copy the screen's pixels through a
+// hidden helper (lib/screen-copy.cjs, no pointer in the picture); Window
+// takes one frame of that window's stream (screen-grab.cjs). Either one
+// returns null when it cannot, and the caller falls back to desktopCapturer
+// thumbnails, which are right but can take seconds.
+const { createScreenGrab } = require("./screen-grab.cjs");
+const { createScreenCopy } = require("../lib/screen-copy.cjs");
+const screenGrab = createScreenGrab({ BrowserWindow, session, log: logRecorder });
+const screenCopy = createScreenCopy({ log: logRecorder });
 
-async function saveScreenshot(display, crop, from) {
-  if (!db || !mediaCapture) return { ok: false, error: "The recorder is still starting." };
+async function fastWindowGrab(sourceId) {
+  try {
+    return await screenGrab.grab(sourceId, null, null);
+  } catch (error) {
+    logRecorder("fast window grab failed", (error && error.message) || error);
+    return null;
+  }
+}
+
+// The display (and crop of it) in Windows screen pixels.
+function screenPixelRect(display, crop) {
+  if (process.platform !== "win32" || !display || !display.bounds) return null;
+  const whole = screen.dipToScreenRect(null, display.bounds);
+  const part = cropPixelRect({ width: whole.width, height: whole.height }, crop);
+  return { x: whole.x + part.x, y: whole.y + part.y, width: part.width, height: part.height };
+}
+
+async function fastScreenCopy(display, crop) {
+  try {
+    const rect = screenPixelRect(display, crop);
+    return rect ? await screenCopy.copy(rect) : null;
+  } catch (error) {
+    logRecorder("fast screen copy failed", (error && error.message) || error);
+    return null;
+  }
+}
+
+// spec: { display, crop, from } for a screen or a part of it, or
+// { window: { sourceId, title }, from } for one window's own pixels.
+async function saveScreenshot(spec) {
+  if (!db || !mediaCapture) return { ok: false, error: "Simple Recorder is still starting." };
+  const from = (spec && spec.from) || "studio";
+  const t0 = Date.now();
+  if (spec && spec.window && String(spec.window.sourceId || "").startsWith("window:")) {
+    const fast = await fastWindowGrab(spec.window.sourceId);
+    if (fast) return saveImageTake(fast.png, fast.width + "x" + fast.height + " window " + from + " fast=" + (Date.now() - t0) + "ms " + fast.timing);
+  }
+  if (spec && spec.window) {
+    let got = null;
+    try {
+      got = await mediaCapture.captureWindowImage(spec.window);
+    } catch (error) {
+      logRecorder("window screenshot failed", (error && error.message) || error);
+      got = { ok: false, error: "Could not capture that window." };
+    }
+    if (!got || !got.ok) return { ok: false, error: (got && got.error) || "Could not capture that window." };
+    const size = got.image.getSize();
+    const t1 = Date.now();
+    const png = got.image.toPNG();
+    if (!png || !png.length) return { ok: false, error: "The window capture came back empty." };
+    return saveImageTake(png, size.width + "x" + size.height + " window " + from + " capture=" + (t1 - t0) + "ms png=" + (Date.now() - t1) + "ms");
+  }
+  const display = spec && spec.display;
+  const crop = spec && spec.crop;
   const shielded = [];
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed() || isCountdownOverlay(win) || !win.isVisible()) continue;
@@ -2318,9 +2471,11 @@ async function saveScreenshot(display, crop, from) {
     } catch (_) {}
   }
   let image = null;
+  let fast = null;
   try {
     if (shielded.length) await new Promise((resolve) => setTimeout(resolve, SCREENSHOT_SETTLE_MS));
-    image = await mediaCapture.captureDisplayImage(display);
+    fast = await fastScreenCopy(display, crop);
+    if (!fast) image = await mediaCapture.captureDisplayImage(display);
   } catch (error) {
     logRecorder("screenshot capture failed", (error && error.message) || error);
   } finally {
@@ -2330,13 +2485,15 @@ async function saveScreenshot(display, crop, from) {
       } catch (_) {}
     }
   }
+  if (fast) return saveImageTake(fast.png, fast.width + "x" + fast.height + " " + from + " fast=" + (Date.now() - t0) + "ms " + fast.timing);
   if (!image) return { ok: false, error: "Could not capture the screen." };
   const rect = cropPixelRect(image.getSize(), crop);
   const size = image.getSize();
   const shot = rect.width === size.width && rect.height === size.height ? image : image.crop(rect);
+  const t1 = Date.now();
   const png = shot.toPNG();
   if (!png || !png.length) return { ok: false, error: "The screen capture came back empty." };
-  return saveImageTake(png, rect.width + "x" + rect.height + " " + from);
+  return saveImageTake(png, rect.width + "x" + rect.height + " " + from + " capture=" + (t1 - t0) + "ms png=" + (Date.now() - t1) + "ms");
 }
 
 // One PNG into today's folder, named like the other screenshots and listed
@@ -2358,29 +2515,134 @@ async function saveImageTake(png, detail) {
     createdAt: new Date().toISOString(),
   };
   db.insertTake(take);
-  logRecorder("screenshot saved", take.name + " " + detail);
-  return { ok: true, take: withDayFolders([take])[0], takes: takesForPage() };
+  const t0 = Date.now();
+  const result = { ok: true, take: withDayFolders([take])[0], takes: takesForPage() };
+  logRecorder("screenshot saved", take.name + " " + detail + " list=" + (Date.now() - t0) + "ms");
+  return result;
 }
 
 function takeScreenshot(display, crop, from) {
-  if (screenshotInflight) return screenshotInflight;
-  screenshotInflight = saveScreenshot(display, crop, from)
-    .catch((error) => {
-      logRecorder("screenshot failed", (error && error.message) || error);
-      return { ok: false, error: "Could not save the screenshot." };
-    })
-    .finally(() => {
-      screenshotInflight = null;
-    });
-  return screenshotInflight;
+  return takeScreenshotSpec({ display, crop, from });
 }
 
-// Studio > Screenshot. The page says what its Source box shows: the whole
-// screen, or a crop on the display it was drawn on.
+// A second press of the same capture while one is saving gets that one's
+// result (a double-click is one screenshot). A different capture waits its
+// turn, since the grab shields this window for its moment.
+let screenshotChain = Promise.resolve();
+function screenshotKey(spec) {
+  return JSON.stringify([
+    spec && spec.from,
+    spec && spec.window ? spec.window : null,
+    spec && spec.display ? spec.display.id : null,
+    spec && spec.crop ? spec.crop : null,
+  ]);
+}
+
+function takeScreenshotSpec(spec) {
+  const key = screenshotKey(spec);
+  if (screenshotInflight && screenshotInflight.key === key) return screenshotInflight.promise;
+  const run = screenshotChain.then(() =>
+    saveScreenshot(spec).catch((error) => {
+      logRecorder("screenshot failed", (error && error.message) || error);
+      return { ok: false, error: "Could not save the screenshot." };
+    }),
+  );
+  const entry = { key, promise: run };
+  screenshotInflight = entry;
+  screenshotChain = run.then(() => {}, () => {});
+  run.finally(() => {
+    if (screenshotInflight === entry) screenshotInflight = null;
+  });
+  return run;
+}
+
+// The Screenshots page: Full screen (the screen under the pointer, or the
+// one it names), Area (a crop on the display it was drawn on), or Window
+// (one window by source id or title).
+function screenshotSpecFrom(payload, from) {
+  const mode = payload && (payload.mode === "window" || payload.mode === "area") ? payload.mode : "screen";
+  if (mode === "window") {
+    return { from, window: { sourceId: String((payload && payload.sourceId) || ""), title: String((payload && payload.title) || "") } };
+  }
+  const crop = mode === "area" && payload && payload.crop && typeof payload.crop === "object" ? payload.crop : null;
+  const display = (payload && payload.displayId && displayById(String(payload.displayId))) || cursorDisplay();
+  return { from, display, crop };
+}
+
+function cursorDisplay() {
+  try {
+    return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  } catch (_) {
+    return screen.getPrimaryDisplay();
+  }
+}
+
 ipcMain.handle("screenshot-take", async (_event, payload) => {
-  const crop = payload && payload.crop && typeof payload.crop === "object" ? payload.crop : null;
-  const display = (crop && displayById(payload.displayId)) || displayForCountdown();
-  return takeScreenshot(display, crop, "studio");
+  if (payload && payload.mode === "window" && !payload.sourceId && !payload.title) {
+    return { ok: false, error: "Pick a window first." };
+  }
+  return takeScreenshotSpec(screenshotSpecFrom(payload, "page"));
+});
+
+// The Screenshots page gets the capture ready ahead of a press (the screen
+// helper, or the picked window's stream), so the screenshot skips that step.
+// Both close themselves after a quiet spell.
+ipcMain.handle("screenshot-warm", async (_event, payload) => {
+  const mode = payload && payload.mode;
+  try {
+    if (mode === "window") {
+      const id = String((payload && payload.sourceId) || "");
+      if (!id.startsWith("window:")) return { ok: false };
+      await screenGrab.warm(id, null);
+      return { ok: true };
+    }
+    return { ok: await screenCopy.warm() };
+  } catch (error) {
+    logRecorder("screenshot warm failed", (error && error.message) || error);
+    return { ok: false };
+  }
+});
+
+ipcMain.handle("screenshot-windows", async (_event, payload) => {
+  if (!mediaCapture || SMOKE) return { screens: [], windows: [] };
+  try {
+    return await mediaCapture.listCaptureNames({ cached: Boolean(payload && payload.cached) });
+  } catch {
+    return { screens: [], windows: [], error: "Could not list the open windows." };
+  }
+});
+
+// The Screenshots page's own choices, kept in SQLite like the studio's.
+const SHOT_MODES = ["screen", "area", "window"];
+function readShotPrefs() {
+  const get = (key, fallback) => (db ? db.kvGet(key, fallback) : fallback);
+  let area = null;
+  try {
+    area = JSON.parse(get("shotArea", "null"));
+  } catch {
+    area = null;
+  }
+  const mode = get("shotMode", "screen");
+  return {
+    mode: SHOT_MODES.includes(mode) ? mode : "screen",
+    copy: get("shotCopy", "0") === "1",
+    open: get("shotOpen", "0") === "1",
+    area: area && typeof area === "object" && area.crop ? area : null,
+  };
+}
+
+ipcMain.handle("shot-prefs-get", () => readShotPrefs());
+
+ipcMain.handle("shot-prefs-set", (_event, patch) => {
+  if (!db || !patch || typeof patch !== "object") return readShotPrefs();
+  if (SHOT_MODES.includes(patch.mode)) db.kvSet("shotMode", patch.mode);
+  if (typeof patch.copy === "boolean") db.kvSet("shotCopy", patch.copy ? "1" : "0");
+  if (typeof patch.open === "boolean") db.kvSet("shotOpen", patch.open ? "1" : "0");
+  if (Object.prototype.hasOwnProperty.call(patch, "area")) {
+    const area = patch.area && typeof patch.area === "object" && patch.area.crop ? patch.area : null;
+    db.kvSet("shotArea", area ? JSON.stringify({ crop: area.crop, displayId: String(area.displayId || ""), label: String(area.label || "") }) : "null");
+  }
+  return readShotPrefs();
 });
 
 // Settings > Theme. Saved in SQLite; main reads it before the window opens

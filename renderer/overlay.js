@@ -195,6 +195,12 @@
         const winGrid = document.querySelector("[data-win-grid]");
         const windows = payload && payload.mode === "windows";
         layer.hidden = windows;
+        if (hint) {
+          hint.textContent =
+            payload && payload.purpose === "screenshot"
+              ? "Drag a box around what to capture, or click one corner and then the other."
+              : "Drag a box around what to record, or click one corner and then the other. Leave out the dock or taskbar.";
+        }
         if (winLayer) winLayer.hidden = !windows;
         if (windows && winGrid) {
           winGrid.textContent = "";

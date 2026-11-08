@@ -2201,10 +2201,33 @@ const studio = {
   page: "studio",
 };
 
+// Screenshots page state. mode/delayMs/copy/open/area are kv prefs.
+const shots = {
+  mode: "screen",
+  copy: false,
+  open: false,
+  area: null,
+  drawing: false,
+  windows: [],
+  windowId: "",
+  windowName: "",
+  loadingWindows: false,
+  busy: false,
+  picker: null,
+};
+
+const PAGE_TITLE = {
+  studio: "Recorder",
+  screenshots: "Screenshots",
+  takes: "Takes",
+  settings: "Settings",
+};
+
 const PAGE_BLURB = {
   studio: "Set up the take, then start the recorder bar.",
+  screenshots: "Capture the whole screen, an area, or one window.",
   takes: "Recordings saved on this computer.",
-  settings: "Defaults for new takes.",
+  settings: "Defaults, theme, and bug reports.",
 };
 
 function showPage(name) {
@@ -2222,10 +2245,15 @@ function showPage(name) {
   });
   const blurb = document.querySelector("[data-page-blurb]");
   if (blurb) blurb.textContent = PAGE_BLURB[next];
-  if (next === "takes") {
-    const fresh = document.querySelector(".take-card.is-new");
+  const title = document.querySelector("[data-page-title]");
+  if (title) title.textContent = PAGE_TITLE[next];
+  if (next === "takes" || next === "screenshots") {
+    const grid = document.querySelector(next === "takes" ? "[data-takes]" : "[data-shots]");
+    const fresh = grid && grid.querySelector(".take-card.is-new");
     if (fresh && typeof fresh.scrollIntoView === "function") fresh.scrollIntoView({ block: "nearest" });
   }
+  if (next === "screenshots" && shots.mode === "window") void refreshShotWindows();
+  if (next === "screenshots") warmShot();
 }
 
 function screenLabel(screen) {
@@ -2489,11 +2517,6 @@ function paintSource() {
     }
     const clear = tools.querySelector("[data-source-clear]");
     if (clear) clear.hidden = !(session.target === "area" && session.areaCrop);
-    const shot = tools.querySelector("[data-source-shot]");
-    if (shot) {
-      shot.disabled = Boolean(studio.shooting || session.areaPicking || isBusy());
-      shot.textContent = studio.shooting ? "Saving…" : "Screenshot";
-    }
   }
   const key = JSON.stringify([
     studio.targetsAt,
@@ -2817,7 +2840,6 @@ function wireStudio() {
     if (el.closest("[data-source-full]")) return selectScreen();
     if (el.closest("[data-source-draw]")) return void drawArea();
     if (el.closest("[data-source-clear]")) return clearCrop();
-    if (el.closest("[data-source-shot]")) return void takeStudioScreenshot();
   });
   document.querySelector("[data-source-body]")?.addEventListener("click", (event) => {
     const el = event.target;
@@ -2921,34 +2943,248 @@ function wireStudio() {
   }
 }
 
-// Studio > Screenshot: a picture of what the Source box says a take records,
-// the whole screen or the crop. Main keeps this window out of the picture.
-async function takeStudioScreenshot() {
-  if (studio.shooting || isBusy() || !api || typeof api.screenshotTake !== "function") return;
-  studio.shooting = true;
-  paintSource();
-  const crop = session.target === "area" && session.areaCrop ? session.areaCrop : null;
+// ---------------------------------------------------------------------------
+// Screenshots page: Full screen, Area, or Window, and what happens after (copy, open). Main does the capture and keeps this
+// window out of the picture; the page's choices are kv prefs in SQLite.
+// ---------------------------------------------------------------------------
+
+const SHOT_MODES = ["screen", "area", "window"];
+
+async function loadShotPrefs() {
+  if (!api || typeof api.shotPrefsGet !== "function") return;
+  try {
+    applyShotPrefs(await api.shotPrefsGet());
+  } catch {
+    /* defaults stay */
+  }
+  paintShotControls();
+  if (shots.mode === "window" && studio.page === "screenshots") void refreshShotWindows();
+}
+
+function applyShotPrefs(prefs) {
+  if (!prefs) return;
+  shots.mode = SHOT_MODES.includes(prefs.mode) ? prefs.mode : "screen";
+  shots.copy = Boolean(prefs.copy);
+  shots.open = Boolean(prefs.open);
+  shots.area = prefs.area && prefs.area.crop ? prefs.area : null;
+}
+
+function saveShotPrefs(patch) {
+  if (api && typeof api.shotPrefsSet === "function") api.shotPrefsSet(patch).catch(() => {});
+}
+
+function shotAreaText() {
+  if (!shots.area) return "No area yet. Draw one, or press Take screenshot to draw it first.";
+  const label = shots.area.label ? shots.area.label : "";
+  return "Area set" + (label ? ": " + label : "") + ". The next screenshot uses it.";
+}
+
+function paintShotControls() {
+  document.querySelectorAll("[data-shot-mode]").forEach((btn) => {
+    btn.setAttribute("aria-checked", String(btn.getAttribute("data-shot-mode") === shots.mode));
+    btn.disabled = shots.busy;
+  });
+  const rows = {
+    screen: document.querySelector("[data-shot-target-screen]"),
+    area: document.querySelector("[data-shot-target-area]"),
+    window: document.querySelector("[data-shot-target-window]"),
+  };
+  for (const [mode, row] of Object.entries(rows)) if (row) row.hidden = mode !== shots.mode;
+  const areaLabel = document.querySelector("[data-shot-area-label]");
+  if (areaLabel) areaLabel.textContent = shotAreaText();
+  const draw = document.querySelector("[data-shot-draw]");
+  if (draw) {
+    draw.textContent = shots.drawing ? "Drawing…" : shots.area ? "Redraw area" : "Draw area";
+    draw.disabled = shots.busy || shots.drawing;
+  }
+  if (shots.picker) {
+    const options = shots.windows.map((win) => ({ value: win.id, label: win.name }));
+    shots.picker.set(options, shots.windowId);
+    shots.picker.setDisabled(shots.busy || !options.length);
+  }
+  const refresh = document.querySelector("[data-shot-windows-refresh]");
+  if (refresh) {
+    refresh.disabled = shots.busy || shots.loadingWindows;
+    refresh.textContent = shots.loadingWindows ? "Looking…" : "Refresh";
+  }
+  const copy = document.querySelector("[data-shot-copy]");
+  if (copy) copy.setAttribute("aria-checked", String(shots.copy));
+  const open = document.querySelector("[data-shot-open]");
+  if (open) open.setAttribute("aria-checked", String(shots.open));
+  const go = document.querySelector("[data-shot-take]");
+  if (go) {
+    go.disabled = shots.busy || shots.drawing;
+    go.textContent = shots.busy ? "Saving…" : "Take screenshot";
+  }
+}
+
+async function refreshShotWindows() {
+  if (!api || typeof api.screenshotWindows !== "function" || shots.loadingWindows) return;
+  shots.loadingWindows = true;
+  paintShotControls();
+  // The last known list first, so the picker fills at once; the fresh one
+  // (which can take a few seconds) replaces it when it comes.
+  if (!shots.windows.length) {
+    const quick = await api.screenshotWindows({ cached: true }).catch(() => null);
+    if (quick && Array.isArray(quick.windows) && quick.windows.length) applyShotWindows(quick.windows);
+  }
+  let list = null;
+  try {
+    list = await api.screenshotWindows();
+  } catch {
+    list = null;
+  }
+  shots.loadingWindows = false;
+  applyShotWindows(list && Array.isArray(list.windows) ? list.windows : shots.windows);
+}
+
+function applyShotWindows(windows) {
+  shots.windows = windows;
+  // Keep the pick across a refresh: the same source, or else a window with
+  // the same title (a source id changes when the app restarts).
+  if (!shots.windows.some((win) => win.id === shots.windowId)) {
+    const same = shots.windows.find((win) => win.name === shots.windowName);
+    shots.windowId = same ? same.id : "";
+  }
+  if (!shots.windowId && shots.windows.length) shots.windowId = shots.windows[0].id;
+  const hit = shots.windows.find((win) => win.id === shots.windowId);
+  shots.windowName = hit ? hit.name : "";
+  if (shots.picker && shots.picker.root) {
+    shots.picker.root.title = shots.windows.length ? "" : "No windows found. Open the app you want, then press Refresh.";
+  }
+  paintShotControls();
+  if (shots.mode === "window" && studio.page === "screenshots") warmShot();
+}
+
+async function drawShotArea() {
+  if (shots.drawing || !api || typeof api.pickAreaFromPage !== "function") return false;
+  shots.drawing = true;
+  paintShotControls();
   let result = null;
   try {
-    result = await api.screenshotTake({ crop, displayId: crop ? String(session.areaDisplayId || "") : "" });
+    result = await api.pickAreaFromPage({ displayId: (shots.area && shots.area.displayId) || "", purpose: "screenshot" });
+  } catch {
+    result = null;
+  }
+  shots.drawing = false;
+  let ok = false;
+  if (result && result.ok && result.crop) {
+    shots.area = { crop: result.crop, displayId: String(result.displayId || ""), label: String(result.label || "") };
+    saveShotPrefs({ area: shots.area });
+    ok = true;
+  } else if (result && result.busy) {
+    toast("Close the recorder bar first.");
+  }
+  paintShotControls();
+  return ok;
+}
+
+function shotPayload() {
+  if (shots.mode === "window") return { mode: "window", sourceId: shots.windowId, title: shots.windowName };
+  if (shots.mode === "area" && shots.area) return { mode: "area", crop: shots.area.crop, displayId: shots.area.displayId };
+  return { mode: "screen" };
+}
+
+// Opens the screen's stream ahead of the press so the screenshot is quicker.
+// Main closes it again after a short idle.
+let shotWarmAt = 0;
+let shotWarmKey = "";
+function warmShot() {
+  if (!api || typeof api.screenshotWarm !== "function") return;
+  if (shots.mode === "window" && !shots.windowId) return;
+  const key = shots.mode === "window" ? shots.windowId : "screen";
+  const now = Date.now();
+  if (key === shotWarmKey && now - shotWarmAt < 5000) return;
+  shotWarmAt = now;
+  shotWarmKey = key;
+  void api.screenshotWarm({ mode: shots.mode, sourceId: shots.mode === "window" ? shots.windowId : "" }).catch(() => {});
+}
+
+async function takeShot() {
+  if (shots.busy || shots.drawing || !api || typeof api.screenshotTake !== "function") return;
+  if (shots.mode === "area" && !shots.area && !(await drawShotArea())) return;
+  if (shots.mode === "window" && !shots.windowId) {
+    toast("Pick a window first. Press Refresh if it is not in the list.", true);
+    return;
+  }
+  shots.busy = true;
+  paintShotControls();
+  let result = null;
+  try {
+    result = await api.screenshotTake(shotPayload());
   } catch {
     result = { ok: false, error: "Could not save the screenshot." };
   }
-  studio.shooting = false;
-  paintSource();
-  onScreenshotSaved(result);
+  shots.busy = false;
+  paintShotControls();
+  await onScreenshotSaved(result, { fromPage: true });
 }
 
-function onScreenshotSaved(result) {
+// Every saved screenshot lands here: this page, the bar's camera, and Save
+// frame's sibling path. Copy and Open apply only to a
+// screenshot taken from this page.
+async function onScreenshotSaved(result, opts) {
+  const fromPage = Boolean(opts && opts.fromPage);
   if (result && Array.isArray(result.takes)) session.takes = result.takes;
   if (result && result.ok && result.take && result.take.id) {
     session.justSavedId = result.take.id;
     logRecorderEvent("screenshot saved", result.take.name || "");
-    toast("Screenshot saved.");
-  } else {
-    toast((result && result.error) || "Could not save the screenshot.", true);
+    let copied = false;
+    if (fromPage && shots.copy && typeof api.takeCopyImage === "function") {
+      const res = await api.takeCopyImage(result.take.id).catch(() => null);
+      copied = Boolean(res && res.ok);
+    }
+    toast((result.take.name || "Screenshot") + (copied ? " saved and copied." : " saved."));
+    paintTakes();
+    if (fromPage && shots.open) openPlayer(result.take.id);
+    return;
   }
+  toast((result && result.error) || "Could not save the screenshot.", true);
   paintTakes();
+}
+
+function wireShots() {
+  const holder = document.querySelector("[data-shot-window-picker]");
+  if (holder) {
+    shots.picker = createPicker(holder, {
+      labelledBy: "shot-window-label",
+      placeholder: "No windows found",
+      onChange: (value) => {
+        shots.windowId = value;
+        const hit = shots.windows.find((win) => win.id === value);
+        shots.windowName = hit ? hit.name : "";
+        warmShot();
+      },
+    });
+  }
+  document.querySelector("[data-shot-modes]")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-shot-mode]");
+    if (!btn || shots.busy) return;
+    shots.mode = btn.getAttribute("data-shot-mode");
+    saveShotPrefs({ mode: shots.mode });
+    paintShotControls();
+    if (shots.mode === "window") void refreshShotWindows();
+    warmShot();
+  });
+  document.querySelector("[data-shot-draw]")?.addEventListener("click", () => void drawShotArea());
+  document.querySelector("[data-shot-windows-refresh]")?.addEventListener("click", () => void refreshShotWindows());
+  document.querySelector("[data-shot-copy]")?.addEventListener("click", () => {
+    shots.copy = !shots.copy;
+    saveShotPrefs({ copy: shots.copy });
+    paintShotControls();
+  });
+  document.querySelector("[data-shot-open]")?.addEventListener("click", () => {
+    shots.open = !shots.open;
+    saveShotPrefs({ open: shots.open });
+    paintShotControls();
+  });
+  // Pointing at the Screenshots tab is enough to start getting ready.
+  document.querySelector('[data-page="screenshots"]')?.addEventListener("pointerenter", warmShot);
+  const takeBtn = document.querySelector("[data-shot-take]");
+  takeBtn?.addEventListener("click", () => void takeShot());
+  takeBtn?.addEventListener("pointerenter", warmShot);
+  takeBtn?.addEventListener("focus", warmShot);
+  paintShotControls();
 }
 
 function isScreenshotTake(take) {
@@ -3017,6 +3253,7 @@ function takeCards(takes) {
         '<span class="take-meta">' + esc(takeMeta(take)) + "</span>" +
         '<div class="take-actions">' +
         '<button type="button" data-take-show="' + esc(take.id) + '">Show in folder</button>' +
+        (isScreenshotTake(take) ? '<button type="button" data-take-copy="' + esc(take.id) + '">Copy</button>' : "") +
         '<button type="button" class="primary" data-take-open="' + esc(take.id) + '">' + (isScreenshotTake(take) ? "View" : "Play") + "</button>" +
         '<button type="button" class="danger" data-take-delete="' + esc(take.id) + '"' +
         (session.deletingId ? " disabled" : "") + ">" + (deleting ? "Deleting" : "Delete") + "</button>" +
@@ -3027,24 +3264,47 @@ function takeCards(takes) {
     .join("");
 }
 
+// Takes lists the videos and Screenshots lists the pictures; both read the
+// same take index, so every call site that repaints one repaints both.
 function paintTakes() {
-  const grid = document.querySelector("[data-takes]");
+  paintTakeGrid(document.querySelector("[data-takes]"), "video");
+  paintTakeGrid(document.querySelector("[data-shots]"), "image");
+  const summary = document.querySelector("[data-shots-summary]");
+  if (summary) {
+    const count = (Array.isArray(session.takes) ? session.takes : []).filter(isScreenshotTake).length;
+    summary.textContent =
+      (count ? count + (count === 1 ? " screenshot" : " screenshots") + ". " : "") +
+      "Saved as PNG files, one folder per day.";
+  }
+}
+
+// Rebuilding a grid reloads every video preview in it, so a grid whose
+// markup did not change is left alone (a new screenshot does not touch the
+// videos). Anything that edits a grid's DOM by hand clears the memo.
+function setGridHtml(grid, html) {
+  if (grid.__html === html) return false;
+  grid.__html = html;
+  grid.innerHTML = html;
+  return true;
+}
+
+function paintTakeGrid(grid, kind) {
   if (!grid) return;
-  const takes = Array.isArray(session.takes) ? session.takes : [];
+  const all = Array.isArray(session.takes) ? session.takes : [];
+  const takes = all.filter((take) => isScreenshotTake(take) === (kind === "image"));
   if (!takes.length) {
-    grid.innerHTML = '<p class="takes-empty">No takes yet. Record one or take a screenshot from Studio, and it shows up here.</p>';
+    setGridHtml(
+      grid,
+      kind === "image"
+        ? '<p class="takes-empty">No screenshots yet. Press Take screenshot above.</p>'
+        : '<p class="takes-empty">No takes yet. Record one from Studio, and it shows up here.</p>',
+    );
     return;
   }
-  grid.innerHTML = takeGroups(takes)
+  const html = takeGroups(takes)
     .map((group) => {
-      const shots = group.takes.filter(isScreenshotTake).length;
-      const videos = group.takes.length - shots;
-      const count = [
-        videos ? videos + (videos === 1 ? " take" : " takes") : "",
-        shots ? shots + (shots === 1 ? " screenshot" : " screenshots") : "",
-      ]
-        .filter(Boolean)
-        .join(" · ");
+      const n = group.takes.length;
+      const count = kind === "image" ? n + (n === 1 ? " screenshot" : " screenshots") : n + (n === 1 ? " take" : " takes");
       return (
         '<section class="take-group" data-take-day="' + esc(group.day) + '">' +
         '<h3 class="take-group-head">' +
@@ -3057,6 +3317,7 @@ function paintTakes() {
       );
     })
     .join("");
+  if (!setGridHtml(grid, html)) return;
   const fresh = grid.querySelector('.take-card[data-take="' + session.justSavedId + '"]');
   if (fresh && studio.page === "takes" && typeof fresh.scrollIntoView === "function") {
     fresh.scrollIntoView({ block: "nearest" });
@@ -3069,6 +3330,8 @@ function releaseTakePreview(id) {
   const card = document.querySelector('.take-card[data-take="' + CSS.escape(id) + '"]');
   const video = card && card.querySelector("video.take-video");
   if (!video) return;
+  const grid = card.closest("[data-takes], [data-shots]");
+  if (grid) grid.__html = "";
   try {
     video.pause();
     video.removeAttribute("src");
@@ -3083,32 +3346,44 @@ async function deleteTake(id) {
   session.deletingId = id;
   paintTakes();
   releaseTakePreview(id);
+  const gone = (Array.isArray(session.takes) ? session.takes : []).find((take) => take && take.id === id);
+  const what = gone && isScreenshotTake(gone) ? "screenshot" : "recording";
   let result = null;
   try {
     result = await api.takeDelete(id);
   } catch {
-    result = { ok: false, error: "Could not delete that recording." };
+    result = { ok: false, error: "Could not delete that " + what + "." };
   }
   session.deletingId = "";
   if (result && Array.isArray(result.takes)) session.takes = result.takes;
   if (result && result.ok) {
     if (session.justSavedId === id) session.justSavedId = "";
-    toast("Recording deleted.");
+    toast(gone && isScreenshotTake(gone) ? "Screenshot deleted." : "Recording deleted.");
   } else if (result && !result.cancelled) {
-    toast(result.error || "Could not delete that recording.", true);
+    toast(result.error || "Could not delete that " + what + ".", true);
   }
   paintTakes();
 }
 
 function wireTakes() {
-  const grid = document.querySelector("[data-takes]");
-  if (!grid) return;
+  for (const grid of document.querySelectorAll("[data-takes], [data-shots]")) wireTakeGrid(grid);
+}
+
+function wireTakeGrid(grid) {
   grid.addEventListener("click", (event) => {
     const target = event.target && typeof event.target.closest === "function" ? event.target : null;
     if (!target) return;
     const show = target.closest("[data-take-show]");
     if (show) {
       api.takeShow(show.getAttribute("data-take-show")).catch(() => {});
+      return;
+    }
+    const copy = target.closest("[data-take-copy]");
+    if (copy) {
+      api
+        .takeCopyImage(copy.getAttribute("data-take-copy"))
+        .then((res) => (res && res.ok ? toast("Copied to the clipboard.") : toast((res && res.error) || "Could not copy the picture.", true)))
+        .catch(() => toast("Could not copy the picture.", true));
       return;
     }
     // Play, View, and the thumbnail all open the built-in player.
@@ -3283,8 +3558,11 @@ function playerDuration() {
   return Number.isFinite(hint) && hint > 0 ? hint : 0;
 }
 
+// Prev/next stays on the page the player was opened from: pictures step
+// through Screenshots, videos through Takes.
 function playerNeighbors() {
-  const list = (Array.isArray(session.takes) ? session.takes : []).filter((take) => take && take.id);
+  const kind = player.take ? isScreenshotTake(player.take) : false;
+  const list = (Array.isArray(session.takes) ? session.takes : []).filter((take) => take && take.id && isScreenshotTake(take) === kind);
   const index = player.take ? list.findIndex((take) => take.id === player.take.id) : -1;
   return {
     index,
@@ -3373,6 +3651,10 @@ function loadPlayerTake(take, opts) {
   refs.error.hidden = true;
   refs.name.textContent = take.name || "Take";
   refs.meta.textContent = takeMeta(take);
+  const back = refs.root.querySelector(".player-back span");
+  if (back) back.textContent = player.kind === "image" ? "Screenshots" : "Takes";
+  const backBtn = refs.root.querySelector("[data-player-close]");
+  if (backBtn) backBtn.title = (player.kind === "image" ? "Back to screenshots" : "Back to takes") + " (Esc)";
   refs.frame.hidden = player.kind !== "video";
   refs.copy.hidden = player.kind !== "image";
   closePlayerMenus();
@@ -3426,7 +3708,7 @@ function closePlayer() {
   const back = player.returnFocus;
   player.returnFocus = null;
   if (back && typeof back.focus === "function" && document.contains(back)) back.focus({ preventScroll: true });
-  else document.querySelector('[data-page="takes"]')?.focus({ preventScroll: true });
+  else document.querySelector('[data-page="' + (studio.page === "screenshots" ? "screenshots" : "takes") + '"]')?.focus({ preventScroll: true });
 }
 
 function closePlayerMenus() {
@@ -4332,10 +4614,14 @@ async function boot() {
   wireTheme();
   render();
   wireTakes();
+  wireShots();
   wirePlayer();
-  document.querySelector("[data-open-folder]")?.addEventListener("click", () => {
-    void api.recordingsOpen().catch(() => {});
-  });
+  for (const btn of document.querySelectorAll("[data-open-folder]")) {
+    btn.addEventListener("click", () => {
+      void api.recordingsOpen().catch(() => {});
+    });
+  }
+  void loadShotPrefs();
   for (const btn of document.querySelectorAll("[data-report]")) {
     btn.addEventListener("click", async () => {
       const res = await api.reportIssue(btn.dataset.report).catch(() => null);

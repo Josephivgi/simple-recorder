@@ -1398,3 +1398,130 @@ test("player: the Takes page opens takes in the built-in player, with the contro
   assert.match(main, /window\.__recPlayerProbe\(\)/);
   assert.match(main, /player: playerProbe,/);
 });
+
+test("Screenshots has its own page and its own words; no agent access", () => {
+  const root = path.join(__dirname, "..");
+  const html = fs.readFileSync(path.join(root, "renderer", "index.html"), "utf8");
+  const app = fs.readFileSync(path.join(root, "renderer", "app.js"), "utf8");
+  const main = fs.readFileSync(path.join(root, "electron", "main.cjs"), "utf8");
+  assert.match(html, /data-page="screenshots"/);
+  assert.match(html, /data-page-panel="screenshots"/);
+  for (const mode of ["screen", "area", "window"]) assert.match(html, new RegExp('data-shot-mode="' + mode + '"'));
+  assert.match(html, /data-shot-take/);
+  assert.doesNotMatch(html, /data-shot-delay/, "screenshots have no delay");
+  assert.doesNotMatch(html, /data-source-shot/, "the studio's old Screenshot button is gone");
+  assert.match(app, /paintTakeGrid\(document\.querySelector\("\[data-takes\]"\), "video"\)/);
+  assert.match(app, /paintTakeGrid\(document\.querySelector\("\[data-shots\]"\), "image"\)/);
+  // The page title follows the page, so Screenshots does not say Recorder.
+  assert.match(html, /<h1 data-page-title>/);
+  assert.match(app, /screenshots: "Screenshots"/);
+  assert.match(app, /purpose: "screenshot"/);
+  // Agent access (MCP) was removed.
+  for (const text of [html, app, main]) assert.doesNotMatch(text, /mcp/i);
+  assert.equal(fs.existsSync(path.join(root, "lib", "mcp-server.cjs")), false);
+});
+
+test("screen copy helper: clean rects, one JSON line per request, and the PNG comes back", async () => {
+  const { createScreenCopy, cleanRect, SCRIPT } = require("../lib/screen-copy.cjs");
+  const { EventEmitter } = require("events");
+  const { PassThrough } = require("stream");
+  assert.deepEqual(cleanRect({ x: -1920.4, y: 0, width: 1920, height: 1080 }), { x: -1920, y: 0, width: 1920, height: 1080 });
+  assert.equal(cleanRect({ x: 0, y: 0, width: 0, height: 10 }), null);
+  assert.equal(cleanRect({ x: "a", y: 0, width: 10, height: 10 }), null);
+  assert.match(SCRIPT, /CopyFromScreen/);
+  // A stand-in helper process: answers each request by writing a file.
+  const spawned = [];
+  const fakeSpawn = (cmd, args, opts) => {
+    const proc = new EventEmitter();
+    proc.stdin = new PassThrough();
+    proc.stdout = new PassThrough();
+    proc.stderr = new PassThrough();
+    proc.kill = () => proc.emit("exit", 0);
+    spawned.push({ cmd, args, opts });
+    let buf = "";
+    proc.stdin.on("data", (chunk) => {
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const q = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        fs.writeFileSync(q.out, Buffer.from("png:" + q.w + "x" + q.h));
+        proc.stdout.write(JSON.stringify({ id: q.id, ok: true, copy: 1, png: 2 }) + "\r\n");
+      }
+    });
+    setImmediate(() => proc.stdout.write('{"ready":true}\r\n'));
+    return proc;
+  };
+  const copier = createScreenCopy({ spawnImpl: fakeSpawn });
+  try {
+    const a = await copier.copy({ x: 0, y: 0, width: 40, height: 30 });
+    const b = await copier.copy({ x: 10, y: 10, width: 5, height: 6 });
+    assert.equal(a.png.toString(), "png:40x30");
+    assert.equal(b.png.toString(), "png:5x6");
+    assert.equal(spawned.length, 1, "one helper serves every screenshot");
+    assert.equal(spawned[0].cmd, "powershell.exe");
+    assert.equal(spawned[0].opts.windowsHide, true, "the helper never shows a window");
+    await assert.rejects(copier.copy({ x: 0, y: 0, width: 0, height: 0 }));
+  } finally {
+    copier.dispose();
+  }
+});
+
+test("screen copy helper: a slow start sends one screenshot to the fallback, not every one after it", async () => {
+  const { createScreenCopy } = require("../lib/screen-copy.cjs");
+  const { EventEmitter } = require("events");
+  const { PassThrough } = require("stream");
+  const spawned = [];
+  // readyAfter: ms before the stand-in helper says it is ready (null: never).
+  const makeSpawn = (readyAfter) => () => {
+    const proc = new EventEmitter();
+    proc.stdin = new PassThrough();
+    proc.stdout = new PassThrough();
+    proc.stderr = new PassThrough();
+    proc.killed = false;
+    proc.kill = () => {
+      proc.killed = true;
+      setImmediate(() => proc.emit("exit", 1));
+    };
+    spawned.push(proc);
+    let buf = "";
+    proc.stdin.on("data", (chunk) => {
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const q = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        fs.writeFileSync(q.out, Buffer.from("png"));
+        proc.stdout.write(JSON.stringify({ id: q.id, ok: true, copy: 1, png: 1 }) + "\n");
+      }
+    });
+    if (readyAfter != null) setTimeout(() => proc.stdout.write('{"ready":true}\n'), readyAfter);
+    return proc;
+  };
+  const rect = { x: 0, y: 0, width: 4, height: 4 };
+
+  const slow = createScreenCopy({ spawnImpl: makeSpawn(150), startWaitMs: 40, hungStartMs: 5000 });
+  try {
+    const t0 = Date.now();
+    await assert.rejects(slow.copy(rect), /still starting/);
+    assert.ok(Date.now() - t0 < 140, "the first screenshot does not wait for the slow helper");
+    await new Promise((r) => setTimeout(r, 200));
+    const shot = await slow.copy(rect);
+    assert.equal(shot.png.toString(), "png", "the next screenshot uses the helper once it is ready");
+    assert.equal(spawned.length, 1, "the slow helper was kept, not restarted");
+  } finally {
+    slow.dispose();
+  }
+
+  spawned.length = 0;
+  const hung = createScreenCopy({ spawnImpl: makeSpawn(null), startWaitMs: 20, hungStartMs: 60 });
+  try {
+    await assert.rejects(hung.copy(rect), /still starting/);
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(spawned[0].killed, true, "a helper that never gets ready is killed");
+    await assert.rejects(hung.copy(rect), /still starting/);
+    assert.equal(spawned.length, 2, "the next screenshot starts a fresh helper");
+  } finally {
+    hung.dispose();
+  }
+});

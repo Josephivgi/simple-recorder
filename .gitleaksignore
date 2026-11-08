@@ -1,0 +1,3 @@
+# Reviewed false positive: the actions/cache "restore-keys" line in this
+# commit is a cache name, not a secret. The line is gone from later commits.
+50981ee83574d541b83ce4c23f93b0b67075c7f2:.github/workflows/release.yml:generic-api-key:149

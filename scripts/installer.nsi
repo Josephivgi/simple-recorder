@@ -8,6 +8,13 @@
 ; exactly what `npm run app:install` makes: %LOCALAPPDATA%\Programs, Start Menu
 ; and Desktop shortcuts, the Add-or-Remove-Programs entry, and the GitHub
 ; Releases update channel. Per user, no admin.
+;
+; Options:
+;   /S             silent (no window)
+;   /NOLAUNCH      do not start Simple Recorder when setup finishes (the
+;                  JWorkspace Store runs /S /NOLAUNCH)
+;   /TESTDIR=<dir> install into <dir> only: no shortcuts, no uninstall entry,
+;                  no launch
 
 Unicode true
 SetCompressor /SOLID lzma
@@ -69,6 +76,11 @@ Section "Install"
   StrCpy $R2 ""
   IfErrors +2
     StrCpy $R2 '--dir "$R1" --no-shortcuts --no-registry'
+  ClearErrors
+  ${GetOptions} $R0 "/NOLAUNCH" $R3
+  StrCpy $R4 "0"
+  IfErrors +2
+    StrCpy $R4 "1"
 
   DetailPrint "Installing ${APP}..."
   System::Call 'Kernel32::SetEnvironmentVariable(t "ELECTRON_RUN_AS_NODE", t "1") i'
@@ -84,6 +96,7 @@ Section "Install"
     Quit
   installed:
   StrCmp $R2 "" 0 done
+  StrCmp $R4 "1" done
 
   ; Started here, not by install.cjs: a child of nsExec would hold its pipe
   ; open and the setup window would wait for the app to close.

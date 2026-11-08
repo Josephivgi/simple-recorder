@@ -50,11 +50,34 @@ jobs:
         shell: pwsh
         run: |
           $zip = Join-Path $env:RUNNER_TEMP "gitleaks.zip"
-          Invoke-WebRequest "https://github.com/gitleaks/gitleaks/releases/download/v$env:GITLEAKS_VERSION/gitleaks_$($env:GITLEAKS_VERSION)_windows_x64.zip" -OutFile $zip
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-          if ($hash -ne $env:GITLEAKS_SHA256) { throw "gitleaks checksum mismatch: $hash" }
-          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "gitleaks")
+          $url = "https://github.com/gitleaks/gitleaks/releases/download/v$env:GITLEAKS_VERSION/gitleaks_$($env:GITLEAKS_VERSION)_windows_x64.zip"
+          # GitHub release downloads sometimes answer 504 for a while. Try a
+          # few minutes (every try must still match the checksum), then build
+          # the same version from source through the Go module proxy, which
+          # checks it against the Go checksum database.
+          $ok = $false
+          for ($i = 1; $i -le 6 -and -not $ok; $i++) {
+            try {
+              Invoke-WebRequest $url -OutFile $zip -TimeoutSec 180
+              $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+              if ($hash -ne $env:GITLEAKS_SHA256) { throw "gitleaks checksum mismatch: $hash" }
+              $ok = $true
+            } catch {
+              Write-Warning "gitleaks download try $i failed: $($_.Exception.Message)"
+              if ($i -lt 6) { Start-Sleep -Seconds ([Math]::Min(60, 15 * $i)) }
+            }
+          }
           $gl = Join-Path $env:RUNNER_TEMP "gitleaks\gitleaks.exe"
+          if ($ok) {
+            Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "gitleaks")
+          } else {
+            Write-Warning "Building gitleaks v$env:GITLEAKS_VERSION from source instead."
+            $env:GOBIN = Join-Path $env:RUNNER_TEMP "gitleaks"
+            $env:GOFLAGS = "-mod=mod"
+            go install "github.com/zricethezav/gitleaks/v8@v$env:GITLEAKS_VERSION"
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $gl)) { throw "gitleaks could not be downloaded or built" }
+          }
+          & $gl version
           & $gl git --redact --no-banner -v .
           if ($LASTEXITCODE -ne 0) { throw "gitleaks found secrets in git history" }
           & $gl dir --redact --no-banner -v .
@@ -66,7 +89,15 @@ jobs:
           node-version: "22"
 
       - name: Install dependencies (no install scripts)
-        run: npm ci --ignore-scripts
+        shell: pwsh
+        run: |
+          npm config set fetch-retries 5
+          for ($i = 1; $i -le 4; $i++) {
+            npm ci --ignore-scripts
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($i -eq 4) { throw "npm ci failed" }
+            Write-Warning "npm ci try $i failed"; Start-Sleep -Seconds (20 * $i)
+          }
 
       - name: Personal info, token use, and secret patterns
         shell: pwsh
@@ -108,18 +139,45 @@ jobs:
         with:
           node-version: "22"
 
+      # The Electron runtime comes from GitHub releases; keep it between runs
+      # so a release does not depend on that download working.
+      - name: Cache the Electron runtime download
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~\AppData\Local\electron\Cache
+          key: electron-win32-x64-${{ hashFiles('package-lock.json') }}
+
       - name: Install dependencies (Windows Electron runtime)
         # Electron 44 fetches its runtime through install.js, not postinstall.
+        # It checks the download against Electron's SHASUMS256; retry it like
+        # the gitleaks download, since it comes from GitHub releases too.
+        shell: pwsh
         run: |
-          npm ci --ignore-scripts
-          node node_modules/electron/install.js
+          npm config set fetch-retries 5
+          for ($i = 1; $i -le 4; $i++) {
+            npm ci --ignore-scripts
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($i -eq 4) { throw "npm ci failed" }
+            Write-Warning "npm ci try $i failed"; Start-Sleep -Seconds (20 * $i)
+          }
+          for ($i = 1; $i -le 10; $i++) {
+            node node_modules/electron/install.js
+            if ($LASTEXITCODE -eq 0 -and (Test-Path node_modules/electron/dist/electron.exe)) { break }
+            if ($i -eq 10) { throw "The Electron runtime could not be downloaded" }
+            Write-Warning "Electron download try $i failed"; Start-Sleep -Seconds ([Math]::Min(90, 15 * $i))
+          }
 
       # windows-2025 runners no longer ship NSIS; the setup .exe needs makensis.
       - name: Install NSIS
         shell: pwsh
         run: |
           if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
-            choco install nsis -y --no-progress
+            for ($i = 1; $i -le 5; $i++) {
+              choco install nsis -y --no-progress
+              if ($LASTEXITCODE -eq 0) { break }
+              if ($i -eq 5) { throw "NSIS could not be installed" }
+              Write-Warning "NSIS install try $i failed"; Start-Sleep -Seconds (20 * $i)
+            }
           }
 
       - name: Determine release version and pack bundle
@@ -145,18 +203,26 @@ jobs:
             version = normalizeVersion(pkg.version) || "1.0.0";
           }
 
-          let existingTags = [];
-          try {
-            const raw = execFileSync(
-              "gh",
-              ["api", "repos/" + process.env.GITHUB_REPOSITORY + "/releases?per_page=100"],
-              { encoding: "utf8" },
-            );
-            const list = JSON.parse(raw);
-            if (Array.isArray(list)) {
-              existingTags = list.map((r) => normalizeVersion(r.tag_name)).filter(Boolean);
+          // A dev build picks its number from this list, so a failed lookup
+          // must not pass as "no releases yet" (that could reuse a number and
+          // overwrite a published build). Retry, then stop.
+          let existingTags = null;
+          for (let i = 1; i <= 5 && !existingTags; i++) {
+            try {
+              const raw = execFileSync(
+                "gh",
+                ["api", "repos/" + process.env.GITHUB_REPOSITORY + "/releases?per_page=100"],
+                { encoding: "utf8" },
+              );
+              const list = JSON.parse(raw);
+              if (Array.isArray(list)) existingTags = list.map((r) => normalizeVersion(r.tag_name)).filter(Boolean);
+            } catch (error) {
+              console.warn("release list try " + i + " failed: " + (error && error.message));
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000 * i);
             }
-          } catch {
+          }
+          if (!existingTags) {
+            if (process.env.REF_TYPE !== "tag" && !process.env.INPUT_VERSION) throw new Error("Could not list releases to pick the version.");
             existingTags = [];
           }
 
@@ -216,12 +282,20 @@ jobs:
           # Fixed name, so releases/latest/download/SimpleRecorder-Setup.exe
           # is a permanent link to the newest Windows build.
           SETUP="dist-app/SimpleRecorder-Setup.exe"
-          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ASSET" "$MANIFEST" "$SETUP" -R "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$TAG" "$ASSET" "$MANIFEST" "$SETUP" \
-              -R "$GITHUB_REPOSITORY" \
-              --target "$TARGET_SHA" \
-              --title "Simple Recorder ${TAG}" \
-              --notes-file "$NOTES_FILE"
-          fi
+          # Safe to repeat: a try that created the release but failed an
+          # upload is finished by the next one with upload --clobber.
+          for i in 1 2 3 4 5; do
+            if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$TAG" "$ASSET" "$MANIFEST" "$SETUP" -R "$GITHUB_REPOSITORY" --clobber && exit 0
+            else
+              gh release create "$TAG" "$ASSET" "$MANIFEST" "$SETUP" \
+                -R "$GITHUB_REPOSITORY" \
+                --target "$TARGET_SHA" \
+                --title "Simple Recorder ${TAG}" \
+                --notes-file "$NOTES_FILE" && exit 0
+            fi
+            echo "Publish try $i failed; retrying."
+            sleep $((20 * i))
+          done
+          echo "Could not publish the release."
+          exit 1

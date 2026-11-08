@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.4.0 (2026-11-08)
+
+### New
+
+- Screenshots has its own page in the sidebar. Capture the full screen, an area you draw, or one window, then press Take screenshot.
+- Turn on Copy to clipboard to paste a screenshot straight into a chat or document, or Open after saving to see it right away.
+- Your screenshots are listed by day on the Screenshots page, with Copy, View, and Delete. The Takes page now lists only videos.
+- Install every JSystems app with one PowerShell command. The README shows how.
+
+### Improved
+
+- Screenshots are much faster, usually under a second. Full screen and Area shots no longer include the mouse pointer.
+- The title at the top of the window now names the page you are on.
+- New installs run on Electron 44.10.1, the browser engine the app runs on, which has security fixes. An in-app update keeps the engine you have. To get the new engine, run SimpleRecorder-Setup.exe again; your recordings and settings stay.
+
 ## v1.3.0 (2026-10-23)
 
 ### Fixed

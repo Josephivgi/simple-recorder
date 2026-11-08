@@ -590,6 +590,18 @@ function attachMediaCapture(host) {
   // small preview. The app's own windows are left out; recording the
   // studio itself is never what the person meant.
   let captureTargetsLock = null;
+  function ownMediaSourceIds() {
+    const own = new Set();
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        if (!win.isDestroyed()) own.add(win.getMediaSourceId());
+      } catch {
+        /* window going away */
+      }
+    }
+    return own;
+  }
+
   function listCaptureTargets() {
     if (captureTargetsLock) return captureTargetsLock;
     const own = new Set();
@@ -911,6 +923,77 @@ function attachMediaCapture(host) {
       const pick = screens.find((item) => sourceDisplayId(item, screens, displays) === wanted) || screens[0];
       const image = pick && pick.thumbnail;
       return image && !image.isEmpty() ? image : null;
+    },
+    // Screens and windows, names only (no thumbnails), for the Screenshots
+    // page's window list and the agent tools. The app's own windows are left
+    // out.
+    // cached: answer from the last list right away when there is one (the
+    // page then asks again for a fresh one, which can take seconds).
+    async listCaptureNames(opts) {
+      const own = ownMediaSourceIds();
+      const sources = opts && opts.cached && cachedCaptureSources.length ? cachedCaptureSources : await getCaptureSources();
+      const list = (Array.isArray(sources) ? sources : []).filter(keepCaptureSource).filter((item) => !own.has(String(item.id)));
+      const displays = screen.getAllDisplays();
+      const primaryId = String(screen.getPrimaryDisplay().id);
+      const screenSources = list.filter((item) => String(item.id).startsWith("screen:"));
+      const screens = screenSources.map((item, i) => {
+        const displayId = sourceDisplayId(item, screenSources, displays);
+        const display = displays.find((d) => String(d.id) === displayId);
+        const scale = (display && Number(display.scaleFactor)) || 1;
+        return {
+          displayId,
+          name: "Screen " + (i + 1),
+          width: display ? Math.round(display.bounds.width * scale) : 0,
+          height: display ? Math.round(display.bounds.height * scale) : 0,
+          primary: displayId === primaryId,
+        };
+      });
+      const windows = list
+        .filter((item) => String(item.id).startsWith("window:"))
+        .map((item) => ({ id: String(item.id), name: String(item.name || "Window") }));
+      return { screens, windows };
+    },
+    // One window's own pixels at its real size, even when other windows
+    // cover part of it. Found by source id, or by title (exact first, then
+    // a part of it). The size comes from the window's on-screen rect, since
+    // a capture thumbnail is scaled to whatever box it is asked for.
+    async captureWindowImage(target) {
+      const wantId = target && target.sourceId ? String(target.sourceId) : "";
+      const wantTitle = target && target.title ? String(target.title).trim() : "";
+      const own = ownMediaSourceIds();
+      const pickFrom = (sources) => {
+        const list = (Array.isArray(sources) ? sources : [])
+          .filter(keepCaptureSource)
+          .filter((item) => String(item.id).startsWith("window:") && !own.has(String(item.id)));
+        if (wantId) {
+          const hit = list.find((item) => String(item.id) === wantId);
+          if (hit) return hit;
+        }
+        if (!wantTitle) return null;
+        const lower = wantTitle.toLowerCase();
+        return (
+          list.find((item) => String(item.name || "").toLowerCase() === lower) ||
+          list.find((item) => String(item.name || "").toLowerCase().includes(lower)) ||
+          null
+        );
+      };
+      const names = await captureSourcesTimeout(
+        desktopCapturer.getSources({ types: ["window"], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false }),
+      );
+      const found = pickFrom(names);
+      if (!found) return { ok: false, error: wantTitle || wantId ? "No open window matches that." : "No window named." };
+      const rect = await windowRectByTitle(found.name).catch(() => null);
+      const size =
+        rect && rect.width > 0 && rect.height > 0
+          ? { width: Math.min(7680, Math.round(rect.width)), height: Math.min(4320, Math.round(rect.height)) }
+          : { width: 1920, height: 1080 };
+      const sources = await captureSourcesTimeout(
+        desktopCapturer.getSources({ types: ["window"], thumbnailSize: size, fetchWindowIcons: false }),
+      );
+      const fresh = (Array.isArray(sources) ? sources : []).find((item) => String(item.id) === String(found.id));
+      const image = fresh && fresh.thumbnail;
+      if (!image || image.isEmpty()) return { ok: false, error: "That window could not be captured. It may be minimized." };
+      return { ok: true, image, name: String(found.name || "Window") };
     },
     getLastDenied() {
       return { mic: lastDenied.mic };
