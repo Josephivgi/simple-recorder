@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; font-src 'self'; script-src 'self'; img-src 'self' data:"
+    />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Recording saved</title>
+    <link rel="stylesheet" href="saved.css" />
+  </head>
+  <body>
+    <div class="saved-card" role="status" aria-live="polite">
+      <div class="saved-head">
+        <svg class="saved-tick" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+          <circle cx="9" cy="9" r="8" fill="currentColor" />
+          <path d="M5.2 9.3l2.5 2.5 5-5.2" fill="none" stroke="var(--stage)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <p class="saved-title">Recording saved</p>
+        <button type="button" class="saved-close" data-saved-action="close" aria-label="Close">
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+            <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" d="M3.5 3.5l9 9M12.5 3.5l-9 9" />
+          </svg>
+        </button>
+      </div>
+      <p class="saved-name"><strong data-saved-name>Screen take</strong> <span data-saved-length></span></p>
+      <p class="saved-where">In <strong>Takes</strong> and in <span data-saved-folder>your Videos folder</span></p>
+      <div class="saved-actions">
+        <button type="button" class="saved-primary" data-saved-action="play">Watch it</button>
+        <button type="button" data-saved-action="takes">Open Takes</button>
+        <button type="button" data-saved-action="folder">Show in folder</button>
+      </div>
+    </div>
+    <script src="saved.js"></script>
+  </body>
+</html>

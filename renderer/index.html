@@ -233,6 +233,21 @@
             </div>
             <button type="button" class="secondary" data-open-folder>Open folder</button>
           </div>
+          <div class="saved-banner" data-saved-banner role="status" aria-live="polite" hidden>
+            <div class="saved-banner-copy">
+              <p class="saved-banner-title" data-saved-banner-title>Recording saved</p>
+              <p class="saved-banner-where" data-saved-banner-where></p>
+            </div>
+            <div class="saved-banner-actions">
+              <button type="button" class="primary" data-saved-banner-play>Watch it</button>
+              <button type="button" class="secondary" data-saved-banner-folder>Show in folder</button>
+              <button type="button" class="saved-banner-close" data-saved-banner-close aria-label="Dismiss">
+                <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+                  <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="square" d="M3.5 3.5l9 9M12.5 3.5l-9 9" />
+                </svg>
+              </button>
+            </div>
+          </div>
           <div class="takes-grid" data-takes></div>
         </div>
       </div>

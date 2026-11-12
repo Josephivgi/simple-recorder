@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.1 (2026-11-12)
+
+### Improved
+
+- When you stop a recording, a "Recording saved" card now appears at the top of your screen, where the recorder bar was. It shows the name, the length, and the folder it went to, with Watch it, Open Takes, and Show in folder buttons. It stays on top without pulling you out of a game and goes away by itself after a few seconds.
+- The app also switches to the Takes page and shows a "Saved" banner above your new recording, which is the first card and marked New. Before, the only sign was a short message inside the app window, which was easy to miss when the window was minimized or behind a game.
+
 ## v1.5.0 (2026-11-12)
 
 ### New

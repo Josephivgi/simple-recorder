@@ -1,6 +1,6 @@
 {
   "name": "simple-recorder",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "private": true,
   "description": "Standalone screen recorder for Windows with a floating recorder bar",
   "license": "MIT",

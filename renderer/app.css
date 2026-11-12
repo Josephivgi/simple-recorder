@@ -1043,6 +1043,58 @@ crop is set) sits under it. */
 
 .take-card.is-new {
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* "Recording saved" banner over the Takes grid after a take finishes. */
+.saved-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-panel);
+  background: var(--accent-soft);
+}
+
+.saved-banner[hidden] {
+  display: none;
+}
+
+.saved-banner-copy {
+  min-width: 0;
+}
+
+.saved-banner-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.saved-banner-where {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.saved-banner-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.saved-banner-close {
+  width: 32px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 0;
+  color: var(--muted);
 }
 
 .take-video {

@@ -222,6 +222,17 @@ pushes from the dev repo to the public repo on its own.
   through `theme-set`. Match Windows resolves to light or dark in the page
   and follows Windows live. The recorder bar keeps its own dark look.
 - `renderer/overlay.{html,css,js}`: the floating bar and pickers.
+- `renderer/saved.{html,css,js}`: the "Recording saved" card. After Stop the
+  bar is gone and the main window is often minimized or behind a game, so a
+  take could look like it vanished. When a take saves, the page calls
+  `take-saved-notice`; main shows this card top center on the bar's screen
+  (`showInactive`, never focusable, always on top) with the name, length,
+  folder ("Videos > Simple recorder > <day>"), Watch it, Open Takes, and
+  Show in folder. It hides after 12 s unless the pointer is on it, and when
+  the next bar opens. Watch it / Open Takes restore the main window and send
+  `saved-notice-open`. The page itself switches to Takes and shows a "Saved:"
+  banner (Watch it, Show in folder, dismiss) over the new card, which is
+  first and marked New; the banner clears when the next take starts.
 
 ## Data
 
@@ -266,7 +277,10 @@ pushes from the dev repo to the public repo on its own.
   `REC_SMOKE_RECORD_MS=<ms>` records one real take with the window hidden
   (`REC_SMOKE_RECORD_CROP=1` for a crop, `REC_SMOKE_RECORD_MIC=0/1`,
   `REC_SMOKE_RECORD_SYSTEM=0/1`) and reports it as `record` (tracks, mime,
-  saved path); check the file's video and audio lengths with ffprobe. The log line
+  saved path, the saved-card info as `notice`, the Takes banner as `banner`,
+  and `watch`: whether the card's Watch it lands in the player); check the
+  file's video and audio lengths with ffprobe. In smoke the saved card renders
+  offscreen and never shows; `REC_SMOKE_SAVED_SHOT=<png>` saves a picture of it. The log line
   `screenshot saved` carries each stage's time; `boot` has launch timings. With `REC_SMOKE_SHOT` the window renders offscreen, since a hidden
   window stops painting and the capture would be stale. If Electron fails
   with `protocol` undefined, `ELECTRON_RUN_AS_NODE` is set in the shell;

@@ -14,6 +14,14 @@ contextBridge.exposeInMainWorld("rec", {
   takeDelete: (id) => ipcRenderer.invoke("take-delete", { id }),
   takeShow: (id) => ipcRenderer.invoke("take-show", { id }),
   takeOpen: (id) => ipcRenderer.invoke("take-open", { id }),
+  // After a take saves: the on-top "Recording saved" card, and its Watch
+  // it / Open Takes buttons coming back to this page.
+  takeSavedNotice: (payload) => ipcRenderer.invoke("take-saved-notice", payload || {}),
+  onSavedNoticeOpen: (handler) => {
+    const listen = (_event, payload) => handler(payload || {});
+    ipcRenderer.on("saved-notice-open", listen);
+    return () => ipcRenderer.removeListener("saved-notice-open", listen);
+  },
   // The built-in player: prefs live in SQLite, and Save frame writes a PNG.
   playerPrefsGet: () => ipcRenderer.invoke("player-prefs-get"),
   playerPrefsSet: (prefs) => ipcRenderer.invoke("player-prefs-set", prefs || {}),

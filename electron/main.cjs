@@ -355,6 +355,7 @@ const RECORDER_PREWARM_DELAY_MS = 2500;
 const RECORDER_PREWARM_STEP_MS = 700;
 const FULL_CROP = { x: 0, y: 0, w: 1, h: 1 };
 const OVERLAY_FILE = path.join(__dirname, "..", "renderer", "overlay.html");
+const SAVED_FILE = path.join(__dirname, "..", "renderer", "saved.html");
 
 let countdownOverlay = null;
 // The take outline is four thin opaque windows, not one transparent window
@@ -465,6 +466,7 @@ function isCountdownOverlay(win) {
   return Boolean(
     win &&
       ((countdownOverlay && win === countdownOverlay) ||
+        (savedNotice && win === savedNotice) ||
         countdownFrameStrips.includes(win) ||
         (areaPicker && win === areaPicker) ||
         (areaPickerWin && win === areaPickerWin)),
@@ -1447,6 +1449,151 @@ function newOverlayWindow(bounds, query) {
   return win;
 }
 
+// "Recording saved" card. When a take finishes, the bar is gone and the
+// main window is usually minimized or behind a game, so a take could look
+// like it vanished. This card opens where the bar sat (top center of the
+// same screen), stays on top without taking focus, says where the take
+// went, and offers Watch it / Open Takes / Show in folder. It hides itself
+// after SAVED_NOTICE_MS unless the pointer is on it.
+const SAVED_NOTICE_WIDTH = 420;
+const SAVED_NOTICE_HEIGHT = 128;
+const SAVED_NOTICE_MS = 12000;
+let savedNotice = null;
+let savedNoticeLoaded = null;
+let savedNoticeTimer = null;
+let savedNoticeTake = null;
+let savedNoticeHover = false;
+let lastSavedNoticeInfo = null;
+
+function ensureSavedNotice() {
+  if (savedNotice && !savedNotice.isDestroyed()) return savedNotice;
+  // A smoke run never puts this card on the desktop: it renders offscreen
+  // and REC_SMOKE_SAVED_SHOT saves a picture of it instead.
+  const offscreen = SMOKE;
+  const win = new BrowserWindow({
+    width: SAVED_NOTICE_WIDTH,
+    height: SAVED_NOTICE_HEIGHT,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    focusable: false,
+    hasShadow: false,
+    show: false,
+    backgroundColor: "#00000000",
+    title: "Recording saved",
+    webPreferences: {
+      preload: path.join(__dirname, "overlay-preload.cjs"),
+      contextIsolation: true,
+      sandbox: true,
+      backgroundThrottling: false,
+      spellcheck: false,
+      ...(offscreen ? { offscreen: true } : {}),
+    },
+  });
+  try {
+    win.setFocusable(false);
+    win.setAlwaysOnTop(true, "screen-saver");
+  } catch (_) {}
+  win.removeMenu();
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  win.webContents.on("will-navigate", (event) => event.preventDefault());
+  win.webContents.on("render-process-gone", (_event, details) => {
+    logCrash("saved notice renderer gone", details && details.reason);
+    if (!win.isDestroyed()) win.destroy();
+  });
+  win.on("closed", () => {
+    if (savedNotice === win) {
+      savedNotice = null;
+      savedNoticeLoaded = null;
+    }
+  });
+  trackWindow(win, "saved");
+  savedNoticeLoaded = win.loadFile(SAVED_FILE).catch((error) => {
+    logCrash("saved notice loadFile", (error && (error.stack || error.message)) || error);
+    if (!win.isDestroyed()) win.destroy();
+  });
+  savedNotice = win;
+  return win;
+}
+
+function savedNoticeBounds() {
+  const display = displayForCountdown();
+  const work = usableWorkArea(display.workArea, display.bounds);
+  return {
+    x: Math.round(work.x + (work.width - SAVED_NOTICE_WIDTH) / 2),
+    y: Math.round(work.y + 16),
+    width: SAVED_NOTICE_WIDTH,
+    height: SAVED_NOTICE_HEIGHT,
+  };
+}
+
+function armSavedNoticeTimer() {
+  clearTimeout(savedNoticeTimer);
+  savedNoticeTimer = setTimeout(() => {
+    if (savedNoticeHover) return;
+    hideSavedNotice();
+  }, SAVED_NOTICE_MS);
+}
+
+function hideSavedNotice() {
+  clearTimeout(savedNoticeTimer);
+  savedNoticeTimer = null;
+  savedNoticeHover = false;
+  if (savedNotice && !savedNotice.isDestroyed()) savedNotice.hide();
+}
+
+async function showSavedNotice(info) {
+  const win = ensureSavedNotice();
+  if (savedNoticeLoaded) await savedNoticeLoaded;
+  if (!win || win.isDestroyed()) return { ok: false };
+  savedNoticeTake = info;
+  if (SMOKE) {
+    lastSavedNoticeInfo = info;
+    try {
+      win.webContents.send("saved-notice", info);
+      if (process.env.REC_SMOKE_SAVED_SHOT) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        win.webContents.invalidate();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const shot = await win.webContents.capturePage();
+        await fs.writeFile(process.env.REC_SMOKE_SAVED_SHOT, shot.toPNG());
+      }
+    } catch (error) {
+      logCrash("saved notice smoke", (error && error.message) || error);
+    }
+    return { ok: true, smoke: true };
+  }
+  try {
+    win.webContents.send("saved-notice", info);
+    win.setBounds(savedNoticeBounds());
+    win.showInactive();
+    win.moveTop();
+  } catch (error) {
+    logCrash("saved notice show", (error && error.message) || error);
+    return { ok: false };
+  }
+  armSavedNoticeTimer();
+  return { ok: true };
+}
+
+// Bring the main window back for Watch it / Open Takes: those are the
+// person asking to see the take, so focus is fine here.
+function revealMainWindow() {
+  const main = mainAppWindow();
+  if (!main || main.isDestroyed()) return null;
+  try {
+    if (main.isMinimized()) main.restore();
+    main.show();
+    main.focus();
+  } catch (_) {}
+  return main;
+}
+
 function ensureCountdownOverlay() {
   if (countdownOverlay && !countdownOverlay.isDestroyed()) return;
   const bounds = countdownSize ? barBoundsFor(countdownOverlayBounds()) : countdownOverlayBounds();
@@ -1553,6 +1700,7 @@ function destroyFrameStrips() {
 }
 
 function startCountdownOverlay(event, payload) {
+  hideSavedNotice();
   const wait = Boolean(payload && payload.wait);
   const recording = Boolean(payload && payload.recording);
   const size = Boolean(payload && payload.size) || (recording && countdownSize);
@@ -1845,6 +1993,8 @@ function createWindow() {
   win.on("closed", () => {
     logCrash("main-window-closed", "main window destroyed");
     destroyCountdownOverlay();
+    clearTimeout(savedNoticeTimer);
+    if (savedNotice && !savedNotice.isDestroyed()) savedNotice.destroy();
     screenGrab.dispose();
     screenCopy.dispose();
   });
@@ -1899,6 +2049,31 @@ async function runSmoke(win) {
       if (record && record.id && db) {
         const row = db.listTakes().find((item) => item.id === record.id);
         if (row) record.path = row.path;
+      }
+      // Give the page's saved-notice call a moment to land.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      record.notice = lastSavedNoticeInfo;
+      record.banner = await win.webContents
+        .executeJavaScript(
+          "(() => { const b = document.querySelector('[data-saved-banner]'); return { hidden: !b || b.hidden," +
+            " title: (document.querySelector('[data-saved-banner-title]') || {}).textContent || ''," +
+            " where: (document.querySelector('[data-saved-banner-where]') || {}).textContent || ''," +
+            " page: (document.querySelector('[data-page][aria-selected=\"true\"]') || {}).textContent || ''," +
+            " firstCardNew: Boolean(document.querySelector('[data-takes] .take-card') && document.querySelector('[data-takes] .take-card').classList.contains('is-new')) }; })()",
+        )
+        .catch((error) => ({ error: String((error && error.message) || error) }));
+      // The card's "Watch it": the page should land on Takes with the take
+      // open in the player. (Main reveals the window first in a real run;
+      // smoke keeps it hidden.)
+      if (record.notice && record.notice.id) {
+        win.webContents.send("saved-notice-open", { id: record.notice.id, play: true });
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        record.watch = await win.webContents
+          .executeJavaScript(
+            "(() => { const p = document.querySelector('[data-player]'); return { playerOpen: Boolean(p && !p.hidden)," +
+              " title: (document.querySelector('[data-player-name]') || {}).textContent || '' }; })()",
+          )
+          .catch((error) => ({ error: String((error && error.message) || error) }));
       }
     }
     const update = updater ? updater.getStatus() : null;
@@ -2960,6 +3135,58 @@ ipcMain.on("overlay-nudge-fps", (event, payload) => {
   if (countdownSender && !countdownSender.isDestroyed()) {
     countdownSender.send("overlay-nudge-fps", payload || {});
   }
+});
+
+// "C:\Users\Example\Videos\Simple recorder\2026-11-11" reads as
+// "Videos > Simple recorder > 2026-11-11": the part a person recognizes.
+function friendlyFolder(folder) {
+  const parts = String(folder || "").split(/[\\/]+/).filter(Boolean);
+  const at = parts.findIndex((part) => part.toLowerCase() === "videos");
+  return (at >= 0 ? parts.slice(at) : parts.slice(-2)).join(" > ");
+}
+
+// The main page reports each saved take; the card says where it went.
+ipcMain.handle("take-saved-notice", async (_event, payload) => {
+  const id = String((payload && payload.id) || "");
+  const take = id ? db.getTake(id) : null;
+  if (!take) return { ok: false };
+  const folder = path.dirname(take.path);
+  return showSavedNotice({
+    id,
+    name: String(take.name || "Screen take"),
+    length: String((payload && payload.length) || ""),
+    partial: Boolean(payload && payload.partial),
+    folder: friendlyFolder(folder),
+  });
+});
+
+ipcMain.on("saved-notice-action", (_event, payload) => {
+  const action = String((payload && payload.action) || "");
+  const take = savedNoticeTake;
+  if (action === "close") {
+    hideSavedNotice();
+    return;
+  }
+  if (!take) return;
+  if (action === "folder") {
+    const row = db.getTake(take.id);
+    if (row && fssync.existsSync(row.path)) shell.showItemInFolder(row.path);
+    else shell.openPath(recordingsDir()).catch(() => {});
+    armSavedNoticeTimer();
+    return;
+  }
+  if (action === "play" || action === "takes") {
+    hideSavedNotice();
+    const main = revealMainWindow();
+    if (main && !main.webContents.isDestroyed()) {
+      main.webContents.send("saved-notice-open", { id: take.id, play: action === "play" });
+    }
+  }
+});
+
+ipcMain.on("saved-notice-hover", (_event, payload) => {
+  savedNoticeHover = Boolean(payload && payload.on);
+  if (!savedNoticeHover) armSavedNoticeTimer();
 });
 
 // The bar's Screenshot button grabs what the take records right now: the

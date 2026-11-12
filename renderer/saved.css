@@ -1,0 +1,119 @@
+/* The "Recording saved" card: the recorder bar's dark look, so it reads as
+   the bar's answer to Stop. The window is transparent; the card fills it. */
+
+:root {
+  --stage: oklch(0.12 0.01 255);
+  --on-stage: oklch(0.99 0.01 255);
+  --stage-muted: oklch(0.82 0.01 255);
+  --ok: oklch(0.72 0.15 150);
+  --accent: oklch(0.56 0.13 255);
+  --stage-line: color-mix(in oklch, var(--on-stage) 14%, transparent);
+  --stage-well: color-mix(in oklch, var(--on-stage) 10%, transparent);
+  --stage-press: color-mix(in oklch, var(--on-stage) 18%, transparent);
+  --radius: 10px;
+  --font: "Segoe UI", system-ui, sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: var(--font);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.saved-card {
+  box-sizing: border-box;
+  height: 100%;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--stage);
+  border: 1px solid var(--stage-line);
+  color: var(--on-stage);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.saved-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.saved-tick {
+  flex: none;
+  color: var(--ok);
+}
+
+.saved-title {
+  margin: 0;
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.saved-name,
+.saved-where {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--stage-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saved-name strong,
+.saved-where strong {
+  color: var(--on-stage);
+  font-weight: 600;
+}
+
+.saved-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.saved-actions button,
+.saved-close {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--stage-well);
+  color: var(--on-stage);
+  cursor: pointer;
+}
+
+.saved-actions .saved-primary {
+  background: var(--accent);
+}
+
+.saved-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: none;
+  color: var(--stage-muted);
+}
+
+@media (hover: hover) {
+  .saved-actions button:hover,
+  .saved-close:hover {
+    background: var(--stage-press);
+    color: var(--on-stage);
+  }
+  .saved-actions .saved-primary:hover {
+    background: color-mix(in oklch, var(--accent) 85%, white);
+  }
+}

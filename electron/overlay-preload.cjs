@@ -19,6 +19,14 @@ contextBridge.exposeInMainWorld("overlay", {
     return () => ipcRenderer.removeListener("overlay-screenshot-done", listen);
   },
   dragBy: (payload) => ipcRenderer.send("overlay-drag-by", payload || {}),
+  // The "Recording saved" card.
+  savedAction: (action) => ipcRenderer.send("saved-notice-action", { action }),
+  savedHover: (on) => ipcRenderer.send("saved-notice-hover", { on: Boolean(on) }),
+  onSaved: (handler) => {
+    const listen = (_event, info) => handler(info || {});
+    ipcRenderer.on("saved-notice", listen);
+    return () => ipcRenderer.removeListener("saved-notice", listen);
+  },
   onState: (handler) => {
     const listen = (_event, state) => handler(state);
     ipcRenderer.on("overlay-state", listen);

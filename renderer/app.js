@@ -202,6 +202,7 @@ const session = {
   pausedTotal: 0,
   justSavedId: "",
   savedName: "",
+  savedBanner: null,
   error: "",
   endedWhileRecording: false,
   ignoreCaptureEnded: false,
@@ -1782,6 +1783,8 @@ async function beginRecording() {
   session.startedAt = Date.now();
   session.endedWhileRecording = false;
   session.justSavedId = "";
+  session.savedBanner = null;
+  paintSavedBanner();
   session.takeWriteFailed = false;
   session.takeChunks = 0;
   session.takeDataFailed = false;
@@ -2028,7 +2031,7 @@ async function saveTake() {
         session.justSavedId = result.take.id;
         session.savedName = result.take.name || name;
         logRecorderEvent("take saved", (result.take.name || name) + " " + formatClock(session.elapsedMs || 0));
-        toast("Recording saved.");
+        announceSaved(result.take, session.takeWriteFailed || endedEarly);
       } else {
         logRecorderEvent("take save failed", (result && result.error) || "no take row");
         session.error = (result && result.error) || "Could not save the take.";
@@ -2052,7 +2055,7 @@ async function saveTake() {
           if (result && result.take && result.take.id) {
             session.justSavedId = result.take.id;
             session.savedName = result.take.name || name;
-            toast("Recording saved.");
+            announceSaved(result.take, session.takeWriteFailed || endedEarly);
           }
         }
       }
@@ -2065,6 +2068,56 @@ async function saveTake() {
   session.phase = "idle";
   render();
   paintTakes();
+}
+
+// A finished take must never look like it vanished: the bar is gone and the
+// main window is often minimized or behind a game. So the page moves to
+// Takes with a "Recording saved" banner over the new card, and main shows
+// the on-top "Recording saved" card where the bar was.
+function friendlyFolder(filePath) {
+  const parts = String(filePath || "").split(/[\\/]+/).filter(Boolean);
+  parts.pop();
+  const at = parts.findIndex((part) => part.toLowerCase() === "videos");
+  return (at >= 0 ? parts.slice(at) : parts.slice(-2)).join(" > ");
+}
+
+function announceSaved(take, partial) {
+  if (!take || !take.id) return;
+  const length = formatClock(session.elapsedMs || take.durationMs || 0);
+  session.savedBanner = {
+    id: take.id,
+    name: String(take.name || "Screen take"),
+    length,
+    folder: friendlyFolder(take.path),
+    partial: Boolean(partial),
+  };
+  toast("Saved to Takes: " + session.savedBanner.name);
+  showPage("takes");
+  paintSavedBanner();
+  if (api && typeof api.takeSavedNotice === "function") {
+    api.takeSavedNotice({ id: take.id, length, partial: Boolean(partial) }).catch(() => {});
+  }
+}
+
+function paintSavedBanner() {
+  const box = document.querySelector("[data-saved-banner]");
+  if (!box) return;
+  const info = session.savedBanner;
+  const still = info && (session.takes || []).some((take) => take.id === info.id);
+  if (!info || (session.takes && session.takes.length && !still)) {
+    box.hidden = true;
+    return;
+  }
+  const title = document.querySelector("[data-saved-banner-title]");
+  if (title) title.textContent = (info.partial ? "Saved (partial): " : "Saved: ") + info.name + " (" + info.length + ")";
+  const where = document.querySelector("[data-saved-banner-where]");
+  if (where) where.textContent = "It is the first card below, and the file is in " + (info.folder || "your Videos folder") + ".";
+  box.hidden = false;
+}
+
+function dismissSavedBanner() {
+  session.savedBanner = null;
+  paintSavedBanner();
 }
 
 // ---------------------------------------------------------------------------
@@ -3037,6 +3090,19 @@ function wireStudio() {
   });
   document.querySelector("[data-mic-switch]")?.addEventListener("click", () => void onMicSwitch());
   document.querySelector("[data-game-switch]")?.addEventListener("click", () => onGameSwitch());
+  document.querySelector("[data-saved-banner-close]")?.addEventListener("click", () => dismissSavedBanner());
+  document.querySelector("[data-saved-banner-play]")?.addEventListener("click", () => {
+    if (session.savedBanner) openPlayer(session.savedBanner.id);
+  });
+  document.querySelector("[data-saved-banner-folder]")?.addEventListener("click", () => {
+    if (session.savedBanner && api && typeof api.takeShow === "function") api.takeShow(session.savedBanner.id).catch(() => {});
+  });
+  if (api && typeof api.onSavedNoticeOpen === "function") {
+    api.onSavedNoticeOpen((payload) => {
+      showPage("takes");
+      if (payload && payload.play && payload.id) openPlayer(payload.id);
+    });
+  }
   document.querySelector("[data-mic-test]")?.addEventListener("click", () => {
     if (session.meter) stopMeter();
     else void startMeter();
@@ -3458,6 +3524,7 @@ function takeCards(takes) {
 function paintTakes() {
   paintTakeGrid(document.querySelector("[data-takes]"), "video");
   paintTakeGrid(document.querySelector("[data-shots]"), "image");
+  paintSavedBanner();
   const summary = document.querySelector("[data-shots-summary]");
   if (summary) {
     const count = (Array.isArray(session.takes) ? session.takes : []).filter(isScreenshotTake).length;
