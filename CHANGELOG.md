@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.6.0 (2026-11-12)
+
+### New
+
+- For X.com switch in the Studio's Quality box. When it is on, recordings are kept inside X's size limit (1920x1200) even at 1440p, and the "Recording saved" card says "Ready to post on X", or tells you if the recording is longer than 2:20 or bigger than 512 MB.
+
+### Improved
+
+- Recordings are now saved as standard MP4 files that upload sites like X accept and that any player can skip around in right away. Before, they were saved in a streaming layout that some sites refused.
+- Video is recorded in H.264 High profile, which looks better at the same file size and is what most sites prefer.
+- Game sound is now recorded in stereo. Windows gave it to the app as mono before.
+- Frame timing is steadier, so recordings play smoothly at the frame rate you picked.
+
 ## v1.5.1 (2026-11-12)
 
 ### Improved

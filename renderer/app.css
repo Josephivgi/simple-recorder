@@ -322,6 +322,16 @@ button.small {
   grid-area: mic;
 }
 
+.x-mode {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
 .sound-row {
   display: flex;
   align-items: center;

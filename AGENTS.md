@@ -96,6 +96,21 @@ pushes from the dev repo to the public repo on its own.
   newest screenshot and video in the real player (`player` in the JSON) and
   `REC_SMOKE_SHOT=<png>` captures the window with it open
   (`REC_SMOKE_PLAYER=picture` ends on the picture viewer instead).
+- `lib/mp4-faststart.cjs`: rewrites Chromium's fragmented MP4 (one empty
+  moov, then moof + mdat pairs) into a normal MP4 (ftyp, moov with full
+  sample tables, one mdat) without re-encoding, streamed from disk. main
+  runs it on the inflight file in `take-save` (and on recovered takes)
+  before the file is filed, through `faststartInPlace`; on any failure the
+  original stays as recorded. With `fps` it snaps video frames onto the
+  1/fps grid: MediaRecorder stamps frames on arrival, so frames jitter and
+  arrive in bursts after encoder stalls. The pass runs from the end and moves
+  crowded frames earlier (into the stall they were captured in), never
+  later, so the picture never drifts behind the sound. Frames the encoder
+  really dropped (it does in the first second or two, and under heavy load)
+  leave the previous picture held, so `avg_frame_rate` can sit under
+  `r_frame_rate`. ffmpeg's null-muxer "non monotonically increasing dts"
+  warnings on held frames also show on untouched MediaRecorder files; check
+  with `-xerror` that every frame decodes.
 - `lib/window-rect.cjs`: Win32 window rect by title (async PowerShell,
   EnumWindows + GetWindowRect), the bridge from a desktopCapturer name to
   a screen-space crop.
@@ -176,10 +191,17 @@ pushes from the dev repo to the public repo on its own.
   (`session.systemTrackIds`), so the mic switch and a lost mic never drop
   game sound. MediaRecorder writes only the first audio track, so both on
   are mixed into one track through an AudioContext. The bar's sound button
-  is the mic only ("Mic on" / "Mic off"). A take is scaled to the chosen
-  height: a crop, or a display taller than the choice, goes through the
-  frame scaler (`scaleWithFrames`: MediaStreamTrackProcessor, an
-  OffscreenCanvas crop and scale per frame, MediaStreamTrackGenerator).
+  is the mic only ("Mic on" / "Mic off"). Sound always goes through an
+  AudioContext mixer with a stereo destination (Windows loopback arrives
+  mono). Recording prefers H.264 High (`avc1.640028`). Every take goes
+  through the frame scaler when the engine has it (`scaleWithFrames`:
+  MediaStreamTrackProcessor draws each capture frame on an OffscreenCanvas,
+  and a clock writes the canvas to a MediaStreamTrackGenerator at the chosen
+  frame rate, repeating the picture when the screen did not change and
+  writing up to 4 missed slots when a timer fires late). The Quality box's
+  "For X.com" switch (kv `xMode`, off by default) keeps the output inside
+  1920x1200 (even sides) whatever the Quality, and the saved card and banner
+  then say "Ready to post on X" or that the take is over 2:20 or 512 MB.
   Nothing in it waits on the page painting. The old path (a detached
   `<video>` drawn into a canvas, `canvas.captureStream`) is only the
   fallback for an engine without those APIs: it stopped producing frames
@@ -277,7 +299,8 @@ pushes from the dev repo to the public repo on its own.
   `REC_SMOKE_RECORD_MS=<ms>` records one real take with the window hidden
   (`REC_SMOKE_RECORD_CROP=1` for a crop, `REC_SMOKE_RECORD_MIC=0/1`,
   `REC_SMOKE_RECORD_SYSTEM=0/1`) and reports it as `record` (tracks, mime,
-  saved path, the saved-card info as `notice`, the Takes banner as `banner`,
+  saved path, `REC_SMOKE_RECORD_X=1`, `REC_SMOKE_RECORD_FPS=<24|30|60>`,
+  `REC_SMOKE_RECORD_QUALITY=<720p|1080p|1440p>`, the saved-card info as `notice`, the Takes banner as `banner`,
   and `watch`: whether the card's Watch it lands in the player); check the
   file's video and audio lengths with ffprobe. In smoke the saved card renders
   offscreen and never shows; `REC_SMOKE_SAVED_SHOT=<png>` saves a picture of it. The log line

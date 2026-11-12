@@ -29,6 +29,13 @@
       setText("[data-saved-name]", String(st.name || "Screen take"));
       setText("[data-saved-length]", st.length ? "(" + String(st.length) + ")" : "");
       setText("[data-saved-folder]", String(st.folder || "your Videos folder"));
+      const x = document.querySelector("[data-saved-x]");
+      if (x) {
+        x.hidden = !st.x;
+        x.textContent = st.x ? String(st.x.text || "") : "";
+        if (st.x && st.x.warn) x.setAttribute("data-warn", "");
+        else x.removeAttribute("data-warn");
+      }
       const title = document.querySelector(".saved-title");
       if (title) title.textContent = st.partial ? "Recording saved (partial)" : "Recording saved";
     });

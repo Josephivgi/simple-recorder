@@ -755,6 +755,7 @@ function attachMediaCapture(host) {
         prefs: {
           soundOn: false,
           systemAudio: true,
+          xMode: false,
           micDeviceId: "",
           recordTarget: "full",
           recordArea: null,
@@ -865,6 +866,7 @@ function attachMediaCapture(host) {
     const next = {};
     if (typeof prefs.soundOn === "boolean") next.soundOn = prefs.soundOn;
     if (typeof prefs.systemAudio === "boolean") next.systemAudio = prefs.systemAudio;
+    if (typeof prefs.xMode === "boolean") next.xMode = prefs.xMode;
     if (typeof prefs.micDeviceId === "string") next.micDeviceId = prefs.micDeviceId;
     if (prefs.recordTarget === "full" || prefs.recordTarget === "area") next.recordTarget = prefs.recordTarget;
     if ("recordArea" in prefs) next.recordArea = prefs.recordArea;

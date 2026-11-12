@@ -25,6 +25,10 @@ body {
   user-select: none;
 }
 
+.saved-card > * {
+  flex-shrink: 0;
+}
+
 .saved-card {
   box-sizing: border-box;
   height: 100%;
@@ -70,6 +74,21 @@ body {
 .saved-where strong {
   color: var(--on-stage);
   font-weight: 600;
+}
+
+.saved-x {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ok);
+}
+
+.saved-x[data-warn] {
+  color: oklch(0.82 0.14 80);
+}
+
+.saved-x[hidden] {
+  display: none;
 }
 
 .saved-actions {

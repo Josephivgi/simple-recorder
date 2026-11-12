@@ -169,6 +169,9 @@ const session = {
   // Game and computer sound (Windows loopback). On by default; the mic is
   // off by default so a take carries the game, not the room.
   systemAudio: true,
+  // X.com mode: keep takes inside X's 1920x1200 limit and say on the saved
+  // card whether the take is short enough to post (2:20). Off by default.
+  xMode: false,
   micLive: false,
   micError: "",
   micNote: "",
@@ -329,6 +332,7 @@ function applyPrefs(status) {
   }
   if (typeof prefs.soundOn === "boolean") session.mic = prefs.soundOn;
   if (typeof prefs.systemAudio === "boolean") session.systemAudio = prefs.systemAudio;
+  if (typeof prefs.xMode === "boolean") session.xMode = prefs.xMode;
   if ("recordFps" in prefs) session.fps = clampRecordFps(prefs.recordFps);
   if ("recordDelayMs" in prefs) session.delayMs = clampDelayMs(prefs.recordDelayMs);
   if ("recordQuality" in prefs) session.quality = clampQuality(prefs.recordQuality);
@@ -342,6 +346,7 @@ function rememberPrefs(patch) {
   if (patch && typeof patch.micDeviceId === "string") payload.micDeviceId = patch.micDeviceId;
   if (patch && typeof patch.soundOn === "boolean") payload.soundOn = patch.soundOn;
   if (patch && typeof patch.systemAudio === "boolean") payload.systemAudio = patch.systemAudio;
+  if (patch && typeof patch.xMode === "boolean") payload.xMode = patch.xMode;
   if (patch && (patch.recordTarget === "auto" || patch.recordTarget === "full" || patch.recordTarget === "area")) {
     payload.recordTarget = patch.recordTarget === "full" ? "auto" : patch.recordTarget;
   }
@@ -1192,30 +1197,102 @@ function frameScalerSupported() {
   );
 }
 
+// X.com's posted limits: no side past 1920x1200 (both even). X mode keeps
+// the take inside them even when Quality asks for 1440p.
+const X_MAX_W = 1920;
+const X_MAX_H = 1200;
+// X caps a normal account's video at 2:20.
+const X_MAX_MS = 140000;
+
+function takeOutputSize(rawW, rawH) {
+  let scale = qualityHeight() / rawH;
+  if (session.xMode) scale = Math.min(scale, X_MAX_W / rawW, X_MAX_H / rawH);
+  let w = evenPx(rawW * scale);
+  let h = evenPx(rawH * scale);
+  if (session.xMode) {
+    w = Math.min(w, X_MAX_W);
+    h = Math.min(h, X_MAX_H);
+  }
+  return { w, h };
+}
+
+// Two loops share one canvas. The reader draws each capture frame as it
+// comes (the capturer only sends one when the screen changes). The clock
+// writes the canvas to the take at a steady frame rate, repeating the last
+// picture when nothing changed, so the file has an even frame rate that
+// upload sites like X accept, instead of "60 fps" that averages 25.
 function scaleWithFrames(src, crop, srcW, srcH) {
   const track = src.getVideoTracks()[0];
   if (!track) return null;
   const rawW = Math.max(2, srcW * crop.w);
   const rawH = Math.max(2, srcH * crop.h);
-  const scale = qualityHeight() / rawH;
-  const outW = evenPx(rawW * scale);
-  const outH = evenPx(rawH * scale);
+  const size = takeOutputSize(rawW, rawH);
+  const outW = size.w;
+  const outH = size.h;
   session.recordSize = { w: outW, h: outH };
   const processor = new MediaStreamTrackProcessor({ track });
   const generator = new MediaStreamTrackGenerator({ kind: "video" });
   const canvas = new OffscreenCanvas(outW, outH);
   const ctx = canvas.getContext("2d", { alpha: false });
   if (!ctx) return null;
+  ctx.imageSmoothingQuality = "high";
   const reader = processor.readable.getReader();
   const writer = generator.writable.getWriter();
-  const job = { stopped: false, frames: 0, errors: 0 };
+  const fps = clampRecordFps(session.fps);
+  const frameMs = 1000 / fps;
+  const job = { stopped: false, frames: 0, drawn: 0, errors: 0, start: 0, slot: 0, timer: 0 };
   const stop = () => {
     if (job.stopped) return;
     job.stopped = true;
+    clearTimeout(job.timer);
     reader.cancel().catch(() => {});
     writer.close().catch(() => {});
   };
   job.stop = stop;
+  // MediaRecorder stamps frames by when they arrive, not by their own
+  // timestamps. A late timer (Windows often fires them several ms late)
+  // writes the slots it missed right away, up to a few; main's rewrite
+  // (lib/mp4-faststart.cjs) spreads such a burst back onto the slots it
+  // belongs to. A long stall (sleep, a frozen machine) just holds the picture.
+  const tick = async () => {
+    job.timer = 0;
+    if (job.stopped) return;
+    const due = Math.floor((performance.now() - job.start) / frameMs);
+    if (due - job.slot > 4) job.slot = due - 4;
+    while (job.slot <= due && !job.stopped) {
+      let out = null;
+      try {
+        out = new VideoFrame(canvas, {
+          timestamp: Math.round((job.start + job.slot * frameMs) * 1000),
+          duration: Math.round(frameMs * 1000),
+        });
+      } catch (error) {
+        job.errors += 1;
+        if (job.errors === 1) logRecorderEvent("scaler frame failed", ((error && error.name) || "Error") + ": " + ((error && error.message) || ""));
+      }
+      if (out) {
+        try {
+          const t0 = performance.now();
+          // The generator owns the frame from here and closes it.
+          await writer.write(out);
+          if (!job.frames) job.firstWriteMs = Math.round(performance.now() - t0);
+          job.frames += 1;
+        } catch {
+          try {
+            out.close();
+          } catch {
+            /* already closed */
+          }
+          stop();
+          return;
+        }
+      }
+      job.slot += 1;
+    }
+    if (job.stopped) return;
+    const next = job.start + job.slot * frameMs - performance.now();
+    job.timer = setTimeout(() => void tick(), Math.max(0, next));
+  };
   (async () => {
     while (!job.stopped) {
       let result;
@@ -1230,30 +1307,22 @@ function scaleWithFrames(src, crop, srcW, srcH) {
         frame.close();
         break;
       }
-      let out = null;
       try {
         const sw = frame.displayWidth;
         const sh = frame.displayHeight;
         ctx.drawImage(frame, sw * crop.x, sh * crop.y, sw * crop.w, sh * crop.h, 0, 0, outW, outH);
-        out = new VideoFrame(canvas, { timestamp: frame.timestamp });
+        job.drawn += 1;
       } catch (error) {
         job.errors += 1;
-        if (job.errors === 1) logRecorderEvent("scaler frame failed", ((error && error.name) || "Error") + ": " + ((error && error.message) || ""));
+        if (job.errors === 1) logRecorderEvent("scaler draw failed", ((error && error.name) || "Error") + ": " + ((error && error.message) || ""));
       } finally {
         frame.close();
       }
-      if (!out) continue;
-      try {
-        // The generator owns the frame from here and closes it.
-        await writer.write(out);
-        job.frames += 1;
-      } catch {
-        try {
-          out.close();
-        } catch {
-          /* already closed */
-        }
-        break;
+      // The clock starts with the first real picture, so a take never opens
+      // on a blank frame.
+      if (job.drawn === 1 && !job.start) {
+        job.start = performance.now();
+        void tick();
       }
     }
     stop();
@@ -1269,10 +1338,9 @@ function recordingVideo(src) {
   const size = streamSourceSize(src);
   const crop = session.target === "area" && session.crop ? clampCrop(session.crop) : { x: 0, y: 0, w: 1, h: 1 };
   session.crop = crop;
-  // A full frame that already fits the chosen quality is the only take that
-  // goes straight out. Cropping, or a display taller than the quality, needs
-  // the scaler.
-  if (isFullCrop(crop) && size.h <= qualityHeight()) return { stream: src, path: "direct" };
+  // Every take goes through the frame scaler when the engine has it: it is
+  // what keeps the frame rate steady and the size inside the limits. The
+  // straight capture is only for an engine without it.
   if (frameScalerSupported()) {
     try {
       const scaled = scaleWithFrames(src, crop, size.w, size.h);
@@ -1281,17 +1349,23 @@ function recordingVideo(src) {
       logRecorderEvent("frame scaler unavailable", ((error && error.name) || "Error") + ": " + ((error && error.message) || ""));
     }
   }
+  if (isFullCrop(crop) && size.h <= qualityHeight()) return { stream: src, path: "direct" };
   return { stream: scaleFromStream(src, crop, size.w, size.h), path: "canvas" };
 }
 
-// MediaRecorder writes only the first audio track it is given, so game
-// sound and the microphone are mixed into one track when both are on.
+// Sound always passes through a small mixer: MediaRecorder writes only the
+// first audio track it gets (so game sound and the mic must be one track),
+// and Windows hands game sound over as mono, which some sites refuse. The
+// mixer's output is stereo; a mono source plays in both ears.
 function recordingAudio(src) {
   const tracks = src && typeof src.getAudioTracks === "function" ? src.getAudioTracks().filter((t) => t.readyState === "live") : [];
-  if (tracks.length <= 1) return tracks;
+  if (!tracks.length) return tracks;
   try {
-    const ctx = new AudioContext({ latencyHint: "playback" });
+    const ctx = new AudioContext({ latencyHint: "playback", sampleRate: 48000 });
     const dest = ctx.createMediaStreamDestination();
+    dest.channelCount = 2;
+    dest.channelCountMode = "explicit";
+    dest.channelInterpretation = "speakers";
     tracks.forEach((track) => {
       ctx.createMediaStreamSource(new MediaStream([track])).connect(dest);
     });
@@ -1740,12 +1814,15 @@ function pickMime(stream) {
     stream && typeof stream.getAudioTracks === "function" && stream.getAudioTracks().length > 0;
   const mp4Candidates = hasAudio
     ? [
+        // High profile first: X and most sites prefer it to Baseline.
+        'video/mp4;codecs="avc1.640028,mp4a.40.2"',
+        'video/mp4;codecs="avc1.4D4028,mp4a.40.2"',
         'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
         'video/mp4;codecs="avc1.42E01E,opus"',
         "video/mp4;codecs=avc1",
         "video/mp4",
       ]
-    : ['video/mp4;codecs="avc1.42E01E"', "video/mp4;codecs=avc1", "video/mp4"];
+    : ['video/mp4;codecs="avc1.640028"', 'video/mp4;codecs="avc1.4D4028"', 'video/mp4;codecs="avc1.42E01E"', "video/mp4;codecs=avc1", "video/mp4"];
   const webmCandidates = hasAudio
     ? ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
     : ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
@@ -2025,6 +2102,8 @@ async function saveTake() {
         mime: mime || "video/webm",
         durationMs: session.elapsedMs || 0,
         partial: session.takeWriteFailed || endedEarly,
+        // The frame clock wrote this rate; main snaps frame times onto it.
+        fps: clampRecordFps(session.fps),
       });
       if (result && result.takes) session.takes = result.takes;
       if (result && result.take && result.take.id) {
@@ -2081,6 +2160,14 @@ function friendlyFolder(filePath) {
   return (at >= 0 ? parts.slice(at) : parts.slice(-2)).join(" > ");
 }
 
+// Same limits main checks for the saved card (2:20, 512 MB).
+function xNote(take) {
+  const ms = session.elapsedMs || take.durationMs || 0;
+  if (ms > X_MAX_MS) return " Too long for X: it takes up to 2:20 on a normal account.";
+  if (Number(take.size) > 512 * 1024 * 1024) return " Too big for X: it takes files up to 512 MB.";
+  return " Ready to post on X.";
+}
+
 function announceSaved(take, partial) {
   if (!take || !take.id) return;
   const length = formatClock(session.elapsedMs || take.durationMs || 0);
@@ -2090,12 +2177,15 @@ function announceSaved(take, partial) {
     length,
     folder: friendlyFolder(take.path),
     partial: Boolean(partial),
+    x: session.xMode ? xNote(take) : "",
   };
   toast("Saved to Takes: " + session.savedBanner.name);
   showPage("takes");
   paintSavedBanner();
   if (api && typeof api.takeSavedNotice === "function") {
-    api.takeSavedNotice({ id: take.id, length, partial: Boolean(partial) }).catch(() => {});
+    api
+      .takeSavedNotice({ id: take.id, length, partial: Boolean(partial), xMode: Boolean(session.xMode), durationMs: session.elapsedMs || take.durationMs || 0 })
+      .catch(() => {});
   }
 }
 
@@ -2111,7 +2201,7 @@ function paintSavedBanner() {
   const title = document.querySelector("[data-saved-banner-title]");
   if (title) title.textContent = (info.partial ? "Saved (partial): " : "Saved: ") + info.name + " (" + info.length + ")";
   const where = document.querySelector("[data-saved-banner-where]");
-  if (where) where.textContent = "It is the first card below, and the file is in " + (info.folder || "your Videos folder") + ".";
+  if (where) where.textContent = "It is the first card below, and the file is in " + (info.folder || "your Videos folder") + "." + (info.x || "");
   box.hidden = false;
 }
 
@@ -2899,7 +2989,18 @@ function paintChoices() {
     btn.setAttribute("aria-checked", String(btn.getAttribute("data-quality") === quality));
   });
   const qualityNote = document.querySelector("[data-quality-summary]");
-  if (qualityNote) qualityNote.textContent = "Records at " + quality + ".";
+  if (qualityNote) {
+    qualityNote.textContent = !session.xMode
+      ? "Records at " + quality + "."
+      : quality === "1440p"
+        ? "Capped at 1920x1200 for X."
+        : quality + ", sized for X.";
+  }
+  const xSwitch = document.querySelector("[data-x-switch]");
+  if (xSwitch) {
+    xSwitch.setAttribute("aria-checked", String(Boolean(session.xMode)));
+    xSwitch.disabled = isBusy();
+  }
   const defaultNote = document.querySelector("[data-default-quality-summary]");
   if (defaultNote) defaultNote.textContent = "New takes record at " + quality + ".";
   const autoStop = clampAutoStopMs(session.autoStopMs);
@@ -3090,6 +3191,12 @@ function wireStudio() {
   });
   document.querySelector("[data-mic-switch]")?.addEventListener("click", () => void onMicSwitch());
   document.querySelector("[data-game-switch]")?.addEventListener("click", () => onGameSwitch());
+  document.querySelector("[data-x-switch]")?.addEventListener("click", () => {
+    if (isBusy()) return;
+    session.xMode = !session.xMode;
+    rememberPrefs({ xMode: session.xMode });
+    render();
+  });
   document.querySelector("[data-saved-banner-close]")?.addEventListener("click", () => dismissSavedBanner());
   document.querySelector("[data-saved-banner-play]")?.addEventListener("click", () => {
     if (session.savedBanner) openPlayer(session.savedBanner.id);
@@ -5114,6 +5221,9 @@ async function smokeRecordProbe(opts) {
   session.crop = crop || { x: 0, y: 0, w: 1, h: 1 };
   if (opts && typeof opts.mic === "boolean") session.mic = opts.mic;
   if (opts && typeof opts.systemAudio === "boolean") session.systemAudio = opts.systemAudio;
+  if (opts && typeof opts.xMode === "boolean") session.xMode = opts.xMode;
+  if (opts && Number(opts.fps) > 0) session.fps = clampRecordFps(opts.fps);
+  if (opts && opts.quality) session.quality = clampQuality(opts.quality);
   session.phase = "countdown";
   const ok = await enableCapture({ forBar: true, isCurrent: () => session.phase === "countdown" });
   if (!ok) return { error: session.error || "capture did not open" };
@@ -5122,11 +5232,20 @@ async function smokeRecordProbe(opts) {
   const input = session.recorder && session.recorder.stream;
   const tracks = input ? input.getTracks().map((t) => t.kind + ":" + t.readyState) : [];
   const mime = session.recorder ? session.recorder.mimeType : "";
+  const raw = session.stream ? session.stream.getAudioTracks().map((t) => (t.getSettings && t.getSettings().channelCount) || 0) : [];
+  const audioChannels = raw.join(",");
   await wait(ms);
+  const scaler = session.frameScaler ? { frames: session.frameScaler.frames, drawn: session.frameScaler.drawn, errors: session.frameScaler.errors, firstWriteMs: session.frameScaler.firstWriteMs || 0, startedAfterMs: session.frameScaler.start && session.startedAt ? Math.round(session.frameScaler.start - (performance.now() - (Date.now() - session.startedAt))) : 0 } : null;
   onStop();
   for (let i = 0; i < 300 && session.phase !== "idle"; i += 1) await wait(100);
   const take = (session.takes || []).find((item) => item.id === session.justSavedId);
-  return { saved: Boolean(take), name: take ? take.name : "", path: take ? take.path || "" : "", id: session.justSavedId, error: session.error || "", tracks, mime, cropped: Boolean(crop) };
+  const codecs = [
+    'video/mp4;codecs="avc1.640028,mp4a.40.2"',
+    'video/mp4;codecs="avc1.64002A,mp4a.40.2"',
+    'video/mp4;codecs="avc1.4D4028,mp4a.40.2"',
+    'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+  ].filter((m) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(m));
+  return { saved: Boolean(take), name: take ? take.name : "", path: take ? take.path || "" : "", id: session.justSavedId, error: session.error || "", tracks, mime, cropped: Boolean(crop), codecs, audioChannels, scaler };
 }
 
 if (new URLSearchParams(location.search).has("smoke")) {

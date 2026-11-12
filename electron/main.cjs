@@ -31,6 +31,7 @@ const {
 const { trackWindow, registerOn, shutdownRegistry } = require("../lib/main-ipc-registry.cjs");
 const { frameLooksBlank } = require("../lib/paint-check");
 const { issueUrl, osLabel } = require("../lib/issue-report");
+const mp4Faststart = require("../lib/mp4-faststart.cjs");
 const { normalizeTheme, themeSource, themeBackground } = require("../lib/themes");
 const { nextScreenshotName, cropPixelRect, isScreenshot } = require("../lib/screenshot.cjs");
 const { readPlayerPrefs, writePlayerPrefs } = require("../lib/player");
@@ -1556,6 +1557,7 @@ async function showSavedNotice(info) {
     lastSavedNoticeInfo = info;
     try {
       win.webContents.send("saved-notice", info);
+      win.setSize(SAVED_NOTICE_WIDTH, SAVED_NOTICE_HEIGHT + (info && info.x ? 20 : 0));
       if (process.env.REC_SMOKE_SAVED_SHOT) {
         await new Promise((resolve) => setTimeout(resolve, 600));
         win.webContents.invalidate();
@@ -1570,7 +1572,9 @@ async function showSavedNotice(info) {
   }
   try {
     win.webContents.send("saved-notice", info);
-    win.setBounds(savedNoticeBounds());
+    const bounds = savedNoticeBounds();
+    if (info && info.x) bounds.height += 20;
+    win.setBounds(bounds);
     win.showInactive();
     win.moveTop();
   } catch (error) {
@@ -2041,6 +2045,9 @@ async function runSmoke(win) {
       };
       if (process.env.REC_SMOKE_RECORD_MIC) opts.mic = process.env.REC_SMOKE_RECORD_MIC === "1";
       if (process.env.REC_SMOKE_RECORD_SYSTEM) opts.systemAudio = process.env.REC_SMOKE_RECORD_SYSTEM === "1";
+      if (process.env.REC_SMOKE_RECORD_X) opts.xMode = process.env.REC_SMOKE_RECORD_X === "1";
+      if (Number(process.env.REC_SMOKE_RECORD_FPS) > 0) opts.fps = Number(process.env.REC_SMOKE_RECORD_FPS);
+      if (process.env.REC_SMOKE_RECORD_QUALITY) opts.quality = process.env.REC_SMOKE_RECORD_QUALITY;
       record = await win.webContents
         .executeJavaScript(
           "typeof window.__recRecordProbe === 'function' ? window.__recRecordProbe(" + JSON.stringify(opts) + ") : { error: 'no probe' }",
@@ -2409,6 +2416,33 @@ function safeTakeBase(name) {
   );
 }
 
+// MediaRecorder writes fragmented MP4. Before a take is filed it is
+// rewritten into a normal MP4 (moov first, steady frame times; see
+// lib/mp4-faststart.cjs) so upload sites like X take it and players seek in
+// it at once. This only ever replaces the in-progress file, before it is a
+// saved take; on any failure the original stays exactly as recorded.
+async function faststartInPlace(file, fps) {
+  if (path.extname(file).toLowerCase() !== ".mp4") return { ok: false, reason: "not mp4" };
+  if (!(await mp4Faststart.isFragmentedMp4(file))) return { ok: false, reason: "not fragmented" };
+  const tmp = file + ".faststart";
+  const t0 = Date.now();
+  try {
+    const result = await mp4Faststart.remuxFaststart(file, tmp, { fps });
+    if (!result || !result.ok) throw new Error((result && result.reason) || "remux refused");
+    await fs.rename(tmp, file);
+    logRecorder(
+      "take faststart",
+      path.basename(file) + " " + (Date.now() - t0) + "ms fragments=" + result.fragments + " grid=" + result.snapped +
+        " " + result.tracks.map((t) => t.handler + ":" + t.samples).join(","),
+    );
+    return result;
+  } catch (error) {
+    await fs.unlink(tmp).catch(() => {});
+    logRecorder("take faststart failed", path.basename(file) + " " + ((error && error.message) || error));
+    return { ok: false, reason: String((error && error.message) || error) };
+  }
+}
+
 // Move a finished inflight file into today's folder in the recordings
 // library and index it.
 ipcMain.handle("take-save", async (_event, payload) => {
@@ -2418,6 +2452,8 @@ ipcMain.handle("take-save", async (_event, payload) => {
     return { ok: false, error: "Bad take path." };
   }
   const ext = path.extname(src).toLowerCase() === ".mp4" ? ".mp4" : ".webm";
+  const fps = Math.round(Number(body.fps) || 0);
+  await faststartInPlace(src, fps === 24 || fps === 30 || fps === 60 ? fps : 0);
   const dir = await takeDayDir(new Date());
   const name = String(body.name || "Take").slice(0, 120);
   const dest = await uniqueTakePath(dir, safeTakeBase(name), ext);
@@ -2935,6 +2971,8 @@ async function recoverInflightTakes() {
       }
       while (takes.some((item) => item && item.name === "Recovered take " + n)) n += 1;
       const ext = path.extname(name).toLowerCase() === ".mp4" ? ".mp4" : ".webm";
+      await faststartInPlace(file, 0);
+      const fixed = await fs.stat(file).catch(() => st);
       const takeName = "Recovered take " + n;
       // Recovered footage lands in the folder for the day it was recorded.
       const dayDir = await takeDayDir(new Date(st.mtimeMs));
@@ -2948,7 +2986,7 @@ async function recoverInflightTakes() {
         name: path.basename(dest, ext),
         path: dest,
         mime: ext === ".mp4" ? "video/mp4" : "video/webm",
-        size: st.size,
+        size: fixed.size,
         durationMs: 0,
         partial: true,
         createdAt: new Date().toISOString(),
@@ -3145,6 +3183,18 @@ function friendlyFolder(folder) {
   return (at >= 0 ? parts.slice(at) : parts.slice(-2)).join(" > ");
 }
 
+// X.com mode: whether a saved take fits what X takes from a normal account
+// (2:20 and 512 MB; the size and frame rate are already kept in range).
+const X_MAX_MS = 140000;
+const X_MAX_BYTES = 512 * 1024 * 1024;
+function xReadiness(take, durationMs) {
+  const tooLong = durationMs > X_MAX_MS;
+  const tooBig = Number(take.size) > X_MAX_BYTES;
+  if (tooLong) return { warn: true, text: "Too long for X: it takes up to 2:20 on a normal account." };
+  if (tooBig) return { warn: true, text: "Too big for X: it takes files up to 512 MB." };
+  return { warn: false, text: "Ready to post on X." };
+}
+
 // The main page reports each saved take; the card says where it went.
 ipcMain.handle("take-saved-notice", async (_event, payload) => {
   const id = String((payload && payload.id) || "");
@@ -3156,6 +3206,7 @@ ipcMain.handle("take-saved-notice", async (_event, payload) => {
     name: String(take.name || "Screen take"),
     length: String((payload && payload.length) || ""),
     partial: Boolean(payload && payload.partial),
+    x: payload && payload.xMode ? xReadiness(take, Number(payload.durationMs) || take.durationMs || 0) : null,
     folder: friendlyFolder(folder),
   });
 });
