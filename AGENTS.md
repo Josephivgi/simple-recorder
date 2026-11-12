@@ -167,9 +167,24 @@ pushes from the dev repo to the public repo on its own.
   two rows of setting boxes: Microphone, Frame rate, Start delay, File
   format (MP4 only, with a disabled WebM placeholder), Quality (the output
   height: 720p/1080p/1440p), and Auto stop (off or 5/15/30 minutes; the tick
-  stops the take through the normal save path). A take is scaled to the
-  chosen height: a crop is rendered through a canvas, and a display taller
-  than the choice is scaled down before it reaches the recorder. Everything
+  stops the take through the normal save path, saved as `recordAutoStopMs`).
+  The Sound box has two switches: Game sound (Windows loopback through
+  `getDisplayMedia` audio, which main answers with `audio: "loopback"`; on
+  by default, kv `systemAudio`) and Microphone (off by default, kv `micOn`;
+  the older `soundOn` key, on by default, is left in place and never read).
+  Loopback tracks are told apart from mic tracks by id
+  (`session.systemTrackIds`), so the mic switch and a lost mic never drop
+  game sound. MediaRecorder writes only the first audio track, so both on
+  are mixed into one track through an AudioContext. The bar's sound button
+  is the mic only ("Mic on" / "Mic off"). A take is scaled to the chosen
+  height: a crop, or a display taller than the choice, goes through the
+  frame scaler (`scaleWithFrames`: MediaStreamTrackProcessor, an
+  OffscreenCanvas crop and scale per frame, MediaStreamTrackGenerator).
+  Nothing in it waits on the page painting. The old path (a detached
+  `<video>` drawn into a canvas, `canvas.captureStream`) is only the
+  fallback for an engine without those APIs: it stopped producing frames
+  about 20 seconds after the main window was minimized or covered by a
+  full-screen game, so takes kept their sound and lost the picture. Everything
   fits the window; nothing scrolls at the default size. The boxes use custom
   pickers, plus a bottom dock with Start Recorder Bar. Takes is the saved
   files grouped under the day folder each one sits in (recent takes, open
@@ -247,7 +262,11 @@ pushes from the dev repo to the public repo on its own.
   `REC_SMOKE_PAGE=<page>` ends on that page, and `REC_SMOKE_TAKE_SHOT=<n>` presses
   Take screenshot n times and reports each press-to-card time
   (`REC_SMOKE_SHOT_WAIT_MS` waits first), `REC_SMOKE_SHOT_MODE=window` or
-  `area` also times one window or area screenshot, and the log line
+  `area` also times one window or area screenshot.
+  `REC_SMOKE_RECORD_MS=<ms>` records one real take with the window hidden
+  (`REC_SMOKE_RECORD_CROP=1` for a crop, `REC_SMOKE_RECORD_MIC=0/1`,
+  `REC_SMOKE_RECORD_SYSTEM=0/1`) and reports it as `record` (tracks, mime,
+  saved path); check the file's video and audio lengths with ffprobe. The log line
   `screenshot saved` carries each stage's time; `boot` has launch timings. With `REC_SMOKE_SHOT` the window renders offscreen, since a hidden
   window stops painting and the capture would be stale. If Electron fails
   with `protocol` undefined, `ELECTRON_RUN_AS_NODE` is set in the shell;

@@ -280,8 +280,8 @@
     if (sound) {
       const micOn = Boolean(st.micOn);
       sound.setAttribute("aria-pressed", String(micOn));
-      sound.setAttribute("aria-label", micOn ? "Sound on" : "Sound off");
-      setText("[data-overlay-sound-label]", String(st.micLabel || (micOn ? "On" : "Off")));
+      sound.setAttribute("aria-label", micOn ? "Microphone on" : "Microphone off");
+      setText("[data-overlay-sound-label]", String(st.micLabel || (micOn ? "Mic on" : "Mic off")));
     }
     const clockWrap = document.querySelector("[data-overlay-clock]");
     if (clockWrap) clockWrap.dataset.empty = clock ? "false" : "true";

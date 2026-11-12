@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.5.0 (2026-11-12)
+
+### New
+
+- Recordings now include game sound: everything your speakers play, like the game, music, or videos. Turn it on or off with the Game sound switch in the Studio's Sound box. It is on by default.
+
+### Improved
+
+- The microphone is now off by default, so your voice and room noise stay out of recordings unless you turn on the Microphone switch in the Sound box. If you had it on before, it starts off after this update.
+- When Game sound and Microphone are both on, they are mixed into one sound track.
+- The sound button on the recorder bar now says "Mic on" or "Mic off", since it only controls the microphone.
+- Auto stop now remembers your choice after you close the app.
+
+### Fixed
+
+- The picture no longer freezes about 20 seconds into a recording while the sound keeps going. This happened when the Simple Recorder window was minimized or covered by a game, on recordings with a cropped area or a screen taller than the chosen quality.
+
 ## v1.4.0 (2026-11-08)
 
 ### New

@@ -166,6 +166,9 @@ const session = {
   areaCrop: null,
   crop: { x: 0, y: 0, w: 1, h: 1 },
   mic: false,
+  // Game and computer sound (Windows loopback). On by default; the mic is
+  // off by default so a take carries the game, not the room.
+  systemAudio: true,
   micLive: false,
   micError: "",
   micNote: "",
@@ -206,6 +209,10 @@ const session = {
   setupLoaded: false,
   mixTimer: 0,
   cropTimer: 0,
+  frameScaler: null,
+  recordSize: null,
+  recordPath: "",
+  audioMix: null,
   mixEls: null,
   takes: [],
   deletingId: "",
@@ -320,6 +327,7 @@ function applyPrefs(status) {
     if (session.phase === "idle") session.crop = session.target === "area" ? session.areaCrop : { x: 0, y: 0, w: 1, h: 1 };
   }
   if (typeof prefs.soundOn === "boolean") session.mic = prefs.soundOn;
+  if (typeof prefs.systemAudio === "boolean") session.systemAudio = prefs.systemAudio;
   if ("recordFps" in prefs) session.fps = clampRecordFps(prefs.recordFps);
   if ("recordDelayMs" in prefs) session.delayMs = clampDelayMs(prefs.recordDelayMs);
   if ("recordQuality" in prefs) session.quality = clampQuality(prefs.recordQuality);
@@ -332,6 +340,7 @@ function rememberPrefs(patch) {
   const payload = {};
   if (patch && typeof patch.micDeviceId === "string") payload.micDeviceId = patch.micDeviceId;
   if (patch && typeof patch.soundOn === "boolean") payload.soundOn = patch.soundOn;
+  if (patch && typeof patch.systemAudio === "boolean") payload.systemAudio = patch.systemAudio;
   if (patch && (patch.recordTarget === "auto" || patch.recordTarget === "full" || patch.recordTarget === "area")) {
     payload.recordTarget = patch.recordTarget === "full" ? "auto" : patch.recordTarget;
   }
@@ -388,6 +397,19 @@ function rememberCaptureSource(id) {
     return Promise.resolve(api.setCaptureSource({ id: next })).catch(() => {});
   }
   return Promise.resolve();
+}
+
+// Loopback tracks come with the screen capture (getDisplayMedia audio);
+// the mic comes from getUserMedia. They are told apart by where they came
+// from, so turning the mic off never drops the game sound.
+function isSystemAudioTrack(track) {
+  return Boolean(track && session.systemTrackIds && session.systemTrackIds.has(track.id));
+}
+
+function systemAudioLive() {
+  const stream = session.stream || session.screenStream;
+  if (!stream || typeof stream.getAudioTracks !== "function") return false;
+  return stream.getAudioTracks().some((track) => isSystemAudioTrack(track) && track.readyState === "live");
 }
 
 function rememberCaptureIntent() {
@@ -848,6 +870,7 @@ function removeMicTracks() {
   for (const stream of targets) {
     if (!stream || typeof stream.getAudioTracks !== "function") continue;
     stream.getAudioTracks().forEach((track) => {
+      if (isSystemAudioTrack(track)) return;
       try {
         track.stop();
       } catch {
@@ -1039,7 +1062,9 @@ async function openStream(opts) {
     video: {
       frameRate: { ideal: clampRecordFps(session.fps), max: clampRecordFps(session.fps) },
     },
-    audio: false,
+    // Game sound: main answers with Windows loopback (everything the
+    // speakers play, never the microphone).
+    audio: Boolean(session.systemAudio),
   });
   // A capture that arrives after the timeout would keep the screen shared
   // with nothing using it, so stop it when it lands.
@@ -1065,6 +1090,8 @@ async function openStream(opts) {
   });
 
   session.screenStream = display;
+  session.systemTrackIds = new Set(display.getAudioTracks().map((track) => track.id));
+  if (session.systemAudio && !session.systemTrackIds.size) logRecorderEvent("game sound", "no loopback track came with the capture");
   // Persist the screen approval off the capture path.
   const screenApproved = Boolean(session.setup && session.setup.screen && session.setup.screen.ok);
   if (!screenApproved) void finishSetupApproval("screen").catch(() => {});
@@ -1144,26 +1171,150 @@ function scaleFromStream(src, crop, srcW, srcH) {
   session.mixEls.cropEl = el;
   session.mixEls.cropCanvas = canvas;
   const out = canvas.captureStream(clampRecordFps(session.fps));
-  if (src && typeof src.getAudioTracks === "function") {
-    src.getAudioTracks().forEach((track) => {
-      if (!out.getAudioTracks().some((existing) => existing.id === track.id)) out.addTrack(track);
-    });
-  }
   session.recordStream = out;
   return out;
 }
 
-function recordingInput() {
-  const src = session.stream;
-  if (!src) return src;
+// The scaler for a take. It reads the capture's frames as a stream
+// (MediaStreamTrackProcessor), crops and scales each one on an
+// OffscreenCanvas, and hands the result to a generated track. Nothing here
+// waits on the page painting: the old <video> + canvas.captureStream path
+// stopped producing frames about 20 seconds after this window was minimized
+// or covered by a full-screen game, so the take kept its sound and lost the
+// picture.
+function frameScalerSupported() {
+  return (
+    typeof MediaStreamTrackProcessor === "function" &&
+    typeof MediaStreamTrackGenerator === "function" &&
+    typeof OffscreenCanvas === "function" &&
+    typeof VideoFrame === "function"
+  );
+}
+
+function scaleWithFrames(src, crop, srcW, srcH) {
+  const track = src.getVideoTracks()[0];
+  if (!track) return null;
+  const rawW = Math.max(2, srcW * crop.w);
+  const rawH = Math.max(2, srcH * crop.h);
+  const scale = qualityHeight() / rawH;
+  const outW = evenPx(rawW * scale);
+  const outH = evenPx(rawH * scale);
+  session.recordSize = { w: outW, h: outH };
+  const processor = new MediaStreamTrackProcessor({ track });
+  const generator = new MediaStreamTrackGenerator({ kind: "video" });
+  const canvas = new OffscreenCanvas(outW, outH);
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (!ctx) return null;
+  const reader = processor.readable.getReader();
+  const writer = generator.writable.getWriter();
+  const job = { stopped: false, frames: 0, errors: 0 };
+  const stop = () => {
+    if (job.stopped) return;
+    job.stopped = true;
+    reader.cancel().catch(() => {});
+    writer.close().catch(() => {});
+  };
+  job.stop = stop;
+  (async () => {
+    while (!job.stopped) {
+      let result;
+      try {
+        result = await reader.read();
+      } catch {
+        break;
+      }
+      if (result.done || !result.value) break;
+      const frame = result.value;
+      if (job.stopped) {
+        frame.close();
+        break;
+      }
+      let out = null;
+      try {
+        const sw = frame.displayWidth;
+        const sh = frame.displayHeight;
+        ctx.drawImage(frame, sw * crop.x, sh * crop.y, sw * crop.w, sh * crop.h, 0, 0, outW, outH);
+        out = new VideoFrame(canvas, { timestamp: frame.timestamp });
+      } catch (error) {
+        job.errors += 1;
+        if (job.errors === 1) logRecorderEvent("scaler frame failed", ((error && error.name) || "Error") + ": " + ((error && error.message) || ""));
+      } finally {
+        frame.close();
+      }
+      if (!out) continue;
+      try {
+        // The generator owns the frame from here and closes it.
+        await writer.write(out);
+        job.frames += 1;
+      } catch {
+        try {
+          out.close();
+        } catch {
+          /* already closed */
+        }
+        break;
+      }
+    }
+    stop();
+  })();
+  if (session.frameScaler) session.frameScaler.stop();
+  session.frameScaler = job;
+  const out = new MediaStream([generator]);
+  session.recordStream = out;
+  return out;
+}
+
+function recordingVideo(src) {
   const size = streamSourceSize(src);
   const crop = session.target === "area" && session.crop ? clampCrop(session.crop) : { x: 0, y: 0, w: 1, h: 1 };
   session.crop = crop;
   // A full frame that already fits the chosen quality is the only take that
   // goes straight out. Cropping, or a display taller than the quality, needs
   // the scaler.
-  if (isFullCrop(crop) && size.h <= qualityHeight()) return src;
-  return scaleFromStream(src, crop, size.w, size.h);
+  if (isFullCrop(crop) && size.h <= qualityHeight()) return { stream: src, path: "direct" };
+  if (frameScalerSupported()) {
+    try {
+      const scaled = scaleWithFrames(src, crop, size.w, size.h);
+      if (scaled) return { stream: scaled, path: "frames" };
+    } catch (error) {
+      logRecorderEvent("frame scaler unavailable", ((error && error.name) || "Error") + ": " + ((error && error.message) || ""));
+    }
+  }
+  return { stream: scaleFromStream(src, crop, size.w, size.h), path: "canvas" };
+}
+
+// MediaRecorder writes only the first audio track it is given, so game
+// sound and the microphone are mixed into one track when both are on.
+function recordingAudio(src) {
+  const tracks = src && typeof src.getAudioTracks === "function" ? src.getAudioTracks().filter((t) => t.readyState === "live") : [];
+  if (tracks.length <= 1) return tracks;
+  try {
+    const ctx = new AudioContext({ latencyHint: "playback" });
+    const dest = ctx.createMediaStreamDestination();
+    tracks.forEach((track) => {
+      ctx.createMediaStreamSource(new MediaStream([track])).connect(dest);
+    });
+    void ctx.resume().catch(() => {});
+    session.audioMix = ctx;
+    return dest.stream.getAudioTracks();
+  } catch (error) {
+    logRecorderEvent("sound mix failed", ((error && error.name) || "Error") + ": " + ((error && error.message) || ""));
+    const system = tracks.find((t) => isSystemAudioTrack(t));
+    return [system || tracks[0]];
+  }
+}
+
+function recordingInput() {
+  const src = session.stream;
+  if (!src) return src;
+  session.recordSize = null;
+  const video = recordingVideo(src);
+  session.recordPath = video.path;
+  const audio = recordingAudio(src);
+  const videoTracks = video.stream.getVideoTracks();
+  const out = new MediaStream(videoTracks.concat(audio));
+  if (video.stream !== src) session.recordStream = out;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1607,7 +1758,8 @@ function pickMime(stream) {
 // rate follows the pixels the take actually ships rather than the encoder
 // default: the Quality box sets the output height, and the width follows it.
 function recordVideoBitrate(stream) {
-  const size = streamSourceSize(stream);
+  // A generated track reports no size of its own; the scaler knows it.
+  const size = session.recordPath === "frames" && session.recordSize ? session.recordSize : streamSourceSize(stream);
   const w = Math.max(320, Math.round(size.w || 1280));
   const h = Math.max(180, Math.round(size.h || 720));
   return Math.min(48000000, Math.max(2000000, Math.round(w * h * (session.fps || 30) * 0.00025)));
@@ -1648,7 +1800,9 @@ async function beginRecording() {
       "record input tracks",
       "audio=" + (input && input.getAudioTracks ? input.getAudioTracks().map((t) => t.readyState).join(",") : "none") +
         " video=" + (input && input.getVideoTracks ? input.getVideoTracks().map((t) => t.readyState).join(",") : "none") +
-        " mic=" + (session.mic ? "on" : "off") + " micLive=" + (session.micLive ? "yes" : "no"),
+        " mic=" + (session.mic ? "on" : "off") + " micLive=" + (session.micLive ? "yes" : "no") +
+        " game=" + (session.systemAudio ? "on" : "off") + " systemLive=" + (systemAudioLive() ? "yes" : "no") +
+        " scaler=" + (session.recordPath || "direct"),
     );
     const mime = pickMime(input);
     const options = {
@@ -1952,6 +2106,11 @@ function micOnlyCaptureLoss(endedTrack) {
 
 function onCaptureEnded(endedTrack) {
   if (session.ignoreCaptureEnded) return;
+  // Game sound ending (an audio device change) never ends the take.
+  if (endedTrack && endedTrack.kind === "audio" && isSystemAudioTrack(endedTrack) && videoCaptureLive()) {
+    logRecorderEvent("game sound ended", "the take keeps recording the screen");
+    return;
+  }
   if (micOnlyCaptureLoss(endedTrack)) {
     handleMicLost("Microphone disconnected.");
     return;
@@ -2003,6 +2162,14 @@ function stopTracks() {
     clearInterval(session.cropTimer);
     session.cropTimer = 0;
   }
+  if (session.frameScaler) {
+    session.frameScaler.stop();
+    session.frameScaler = null;
+  }
+  if (session.audioMix) {
+    session.audioMix.close().catch(() => {});
+    session.audioMix = null;
+  }
   const stopped = new Set();
   const stopOne = (track) => {
     if (!track || stopped.has(track)) return;
@@ -2035,6 +2202,7 @@ function stopTracks() {
   }
   session.stream = null;
   session.screenStream = null;
+  session.systemTrackIds = null;
   session.micStream = null;
   session.micLive = false;
   session.mixEls = null;
@@ -2303,6 +2471,18 @@ function micOptions() {
   return list;
 }
 
+// What a take will carry, in words: "Game sound only", "Game sound and
+// mic", "Mic only", or "No sound".
+function soundText(long) {
+  const game = Boolean(session.systemAudio);
+  const mic = micRecording();
+  const blocked = session.mic && !mic;
+  if (game && mic) return long ? "Game sound and your microphone" : "Game + mic";
+  if (game) return blocked ? (long ? "Game sound only (microphone blocked)" : "Game sound") : long ? "Game sound only" : "Game sound";
+  if (mic) return long ? "Microphone only" : "Mic only";
+  return blocked ? "Microphone blocked" : long ? "No sound" : "Off";
+}
+
 function micText() {
   if (!session.mic) return "Off";
   if (!micRecording()) return "Blocked";
@@ -2464,6 +2644,15 @@ async function onMicSwitch() {
   if (session.mic) await refreshMicDevices();
 }
 
+// Game sound is a setup choice like the frame rate: it applies to the next
+// capture the bar opens, so it locks while a bar is up.
+function onGameSwitch() {
+  if (isBusy()) return;
+  session.systemAudio = !session.systemAudio;
+  rememberPrefs({ systemAudio: session.systemAudio });
+  render();
+}
+
 function onMicDevice(id) {
   if (isBusy()) return;
   session.micDeviceId = String(id || "");
@@ -2599,15 +2788,14 @@ function paintMic() {
     sw.setAttribute("aria-checked", String(Boolean(session.mic)));
     sw.disabled = session.micRetryBusy;
   }
+  const game = document.querySelector("[data-game-switch]");
+  if (game) {
+    game.setAttribute("aria-checked", String(Boolean(session.systemAudio)));
+    game.disabled = isBusy();
+  }
   const summary = document.querySelector("[data-mic-summary]");
   if (summary) {
-    summary.textContent = session.micRetryBusy
-      ? "Asking for your microphone"
-      : micRecording()
-        ? "Sound is recorded with the video"
-        : session.mic
-          ? "Microphone blocked"
-          : "Sound off";
+    summary.textContent = session.micRetryBusy ? "Asking for your microphone" : soundText(true);
   }
   if (studio.micPicker) studio.micPicker.set(micOptions(), session.micDeviceId);
   const test = document.querySelector("[data-mic-test]");
@@ -2719,7 +2907,7 @@ function paintDock() {
   if (summary) {
     const html =
       dockItem("Source", sourceText()) +
-      dockItem("Microphone", micText()) +
+      dockItem("Sound", soundText(false)) +
       dockItem("Frame rate", clampRecordFps(session.fps) + " fps") +
       dockItem("Delay", delayLabel(session.delayMs));
     if (summary.innerHTML !== html) summary.innerHTML = html;
@@ -2848,6 +3036,7 @@ function wireStudio() {
     if (el.closest("[data-draw-area]")) void drawArea(studio.areaPicker ? areaScreenPick : "");
   });
   document.querySelector("[data-mic-switch]")?.addEventListener("click", () => void onMicSwitch());
+  document.querySelector("[data-game-switch]")?.addEventListener("click", () => onGameSwitch());
   document.querySelector("[data-mic-test]")?.addEventListener("click", () => {
     if (session.meter) stopMeter();
     else void startMeter();
@@ -4843,9 +5032,40 @@ async function smokePlayerProbe() {
   return out;
 }
 
+// The record probe (smoke only): a real take through the real engine, with
+// the window hidden the whole time, which is the state a take is in while
+// the person plays a game over it. REC_SMOKE_RECORD_MS sets the length and
+// REC_SMOKE_RECORD_CROP=1 records a crop (the scaler path). main reads the
+// saved file back and reports how much video and sound it holds.
+async function smokeRecordProbe(opts) {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  for (let i = 0; i < 50 && !session.setupLoaded; i += 1) await wait(100);
+  const ms = Math.max(1000, Number(opts && opts.ms) || 5000);
+  const crop = opts && opts.crop ? clampCrop({ x: 0.05, y: 0.05, w: 0.9, h: 0.85 }) : null;
+  session.target = crop ? "area" : "auto";
+  session.areaCrop = crop;
+  session.crop = crop || { x: 0, y: 0, w: 1, h: 1 };
+  if (opts && typeof opts.mic === "boolean") session.mic = opts.mic;
+  if (opts && typeof opts.systemAudio === "boolean") session.systemAudio = opts.systemAudio;
+  session.phase = "countdown";
+  const ok = await enableCapture({ forBar: true, isCurrent: () => session.phase === "countdown" });
+  if (!ok) return { error: session.error || "capture did not open" };
+  await beginRecording();
+  if (session.phase !== "recording") return { error: session.error || "take did not start" };
+  const input = session.recorder && session.recorder.stream;
+  const tracks = input ? input.getTracks().map((t) => t.kind + ":" + t.readyState) : [];
+  const mime = session.recorder ? session.recorder.mimeType : "";
+  await wait(ms);
+  onStop();
+  for (let i = 0; i < 300 && session.phase !== "idle"; i += 1) await wait(100);
+  const take = (session.takes || []).find((item) => item.id === session.justSavedId);
+  return { saved: Boolean(take), name: take ? take.name : "", path: take ? take.path || "" : "", id: session.justSavedId, error: session.error || "", tracks, mime, cropped: Boolean(crop) };
+}
+
 if (new URLSearchParams(location.search).has("smoke")) {
   window.__recPreviewProbe = smokePreviewProbe;
   window.__recPlayerProbe = smokePlayerProbe;
+  window.__recRecordProbe = smokeRecordProbe;
 }
 
 void boot();

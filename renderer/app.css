@@ -321,6 +321,27 @@ button.small {
 .panel-mic {
   grid-area: mic;
 }
+
+.sound-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sound-label {
+  display: flex;
+  flex-direction: column;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.sound-label small {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--muted);
+}
 .panel-fps {
   grid-area: fps;
 }

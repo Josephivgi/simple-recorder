@@ -604,7 +604,7 @@ function overlayStatePayload() {
     delayLabel: countdownDelayLabel,
     fps: countdownFps,
     micOn: countdownMicOn,
-    micLabel: countdownMicNote || (countdownMicOn ? "On" : "Off"),
+    micLabel: countdownMicNote || (countdownMicOn ? "Mic on" : "Mic off"),
   };
 }
 
@@ -1880,6 +1880,27 @@ async function runSmoke(win) {
         .catch((error) => ({ error: String((error && error.message) || error) })),
       new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 5000)),
     ]);
+    // REC_SMOKE_RECORD_MS=<ms> records one real take with this window hidden
+    // (REC_SMOKE_RECORD_CROP=1 for a crop, REC_SMOKE_RECORD_MIC=0/1 and
+    // REC_SMOKE_RECORD_SYSTEM=0/1 for the sound sources) and reports the file.
+    let record = null;
+    if (Number(process.env.REC_SMOKE_RECORD_MS) > 0) {
+      const opts = {
+        ms: Math.min(600000, Number(process.env.REC_SMOKE_RECORD_MS)),
+        crop: process.env.REC_SMOKE_RECORD_CROP === "1",
+      };
+      if (process.env.REC_SMOKE_RECORD_MIC) opts.mic = process.env.REC_SMOKE_RECORD_MIC === "1";
+      if (process.env.REC_SMOKE_RECORD_SYSTEM) opts.systemAudio = process.env.REC_SMOKE_RECORD_SYSTEM === "1";
+      record = await win.webContents
+        .executeJavaScript(
+          "typeof window.__recRecordProbe === 'function' ? window.__recRecordProbe(" + JSON.stringify(opts) + ") : { error: 'no probe' }",
+        )
+        .catch((error) => ({ error: String((error && error.message) || error) }));
+      if (record && record.id && db) {
+        const row = db.listTakes().find((item) => item.id === record.id);
+        if (row) record.path = row.path;
+      }
+    }
     const update = updater ? updater.getStatus() : null;
     const paint = await inspectWindowPaint(win);
     // The page installs its crop-preview probe under ?smoke=1; it lives next
@@ -1993,6 +2014,7 @@ async function runSmoke(win) {
           paint: Object.assign({}, paint, { gpu: gpuSummary() }),
           cropPreview,
           shots,
+          record,
           info,
         }) +
         "\n",

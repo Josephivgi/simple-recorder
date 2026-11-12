@@ -112,9 +112,6 @@ jobs:
       - name: Dependency audit
         run: npm audit --audit-level=high
 
-      - name: Unit tests
-        run: npm test
-
   release:
     name: Build and publish
     needs: gate

@@ -547,7 +547,7 @@ function attachMediaCapture(host) {
         return true;
       });
     }
-    sess.setDisplayMediaRequestHandler(async (_request, callback) => {
+    sess.setDisplayMediaRequestHandler(async (request, callback) => {
       try {
         const allowed = await promptKind(win, "screen");
         if (!allowed) {
@@ -570,7 +570,14 @@ function attachMediaCapture(host) {
           denyDisplayMedia(callback);
           return;
         }
-        callback({ video: picked });
+        // Game sound: Windows loopback is everything the speakers play and
+        // never the microphone. Only a take asks for it (audio: true); the
+        // crop preview and screenshots stay video only.
+        if (request && request.audioRequested && process.platform === "win32") {
+          callback({ video: picked, audio: "loopback" });
+        } else {
+          callback({ video: picked });
+        }
       } catch {
         denyDisplayMedia(callback);
       }
@@ -746,7 +753,8 @@ function attachMediaCapture(host) {
         screen: { ok: true },
         mic: { ok: true },
         prefs: {
-          soundOn: true,
+          soundOn: false,
+          systemAudio: true,
           micDeviceId: "",
           recordTarget: "full",
           recordArea: null,
@@ -856,6 +864,7 @@ function attachMediaCapture(host) {
     const prefs = payload && typeof payload === "object" ? payload : {};
     const next = {};
     if (typeof prefs.soundOn === "boolean") next.soundOn = prefs.soundOn;
+    if (typeof prefs.systemAudio === "boolean") next.systemAudio = prefs.systemAudio;
     if (typeof prefs.micDeviceId === "string") next.micDeviceId = prefs.micDeviceId;
     if (prefs.recordTarget === "full" || prefs.recordTarget === "area") next.recordTarget = prefs.recordTarget;
     if ("recordArea" in prefs) next.recordArea = prefs.recordArea;

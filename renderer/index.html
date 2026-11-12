@@ -64,13 +64,22 @@
           <section class="panel panel-mic" aria-labelledby="mic-title">
             <header class="panel-head">
               <div class="panel-title">
-                <h2 id="mic-title">Microphone</h2>
-                <p class="panel-sub" data-mic-summary>Sound off</p>
+                <h2 id="mic-title">Sound</h2>
+                <p class="panel-sub" data-mic-summary>Game sound only</p>
               </div>
-              <button type="button" class="switch" role="switch" aria-checked="false" aria-label="Record sound" data-mic-switch>
+            </header>
+            <div class="sound-row">
+              <span class="sound-label" id="game-sound-label">Game sound<small>What your speakers play</small></span>
+              <button type="button" class="switch" role="switch" aria-checked="true" aria-labelledby="game-sound-label" data-game-switch>
                 <span class="switch-track"><span class="switch-thumb"></span></span>
               </button>
-            </header>
+            </div>
+            <div class="sound-row">
+              <span class="sound-label" id="mic-sound-label">Microphone<small>Your voice</small></span>
+              <button type="button" class="switch" role="switch" aria-checked="false" aria-labelledby="mic-sound-label" data-mic-switch>
+                <span class="switch-track"><span class="switch-thumb"></span></span>
+              </button>
+            </div>
             <div class="field">
               <span class="field-label" id="mic-input-label">Input</span>
               <div class="picker" data-mic-picker></div>
